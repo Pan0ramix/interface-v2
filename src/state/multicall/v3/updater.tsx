@@ -111,14 +111,30 @@ async function fetchChunk(
                 returnData: r.returnData || '0x',
               };
 
-              // Debug failed calls
+              // Debug failed calls - especially pool calls for Base Sepolia
               if (!r.success && process.env.NODE_ENV === 'development') {
-                console.warn('Multicall3 call failed', {
-                  index: idx,
-                  target: localChunk[idx]?.address,
-                  selector: localChunk[idx]?.callData?.slice(0, 10),
-                  returnData: r.returnData || '0x',
-                });
+                const selector = localChunk[idx]?.callData?.slice(0, 10);
+                const isPoolCall =
+                  selector === '0x3850c7bd' || selector === '0x1a686502'; // globalState/slot0 // liquidity
+
+                if (
+                  isPoolCall ||
+                  (chainId !== undefined && Number(chainId) === 84532)
+                ) {
+                  console.warn('Pool call failed on Base Sepolia', {
+                    index: idx,
+                    target: localChunk[idx]?.address,
+                    selector: selector,
+                    methodName:
+                      selector === '0x3850c7bd'
+                        ? 'globalState/slot0'
+                        : selector === '0x1a686502'
+                        ? 'liquidity'
+                        : 'unknown',
+                    returnData: r.returnData || '0x',
+                    callDataLength: localChunk[idx]?.callData?.length,
+                  });
+                }
               }
 
               return result;
@@ -507,26 +523,6 @@ export default function Updater(): null {
 
             // dispatch any new results
             if (Object.keys(results).length > 0) {
-              // Debug logging for Base Sepolia
-              if (
-                process.env.NODE_ENV === 'development' &&
-                chainId !== undefined &&
-                Number(chainId) === 84532
-              ) {
-                console.log('Dispatching updateV3MulticallResults', {
-                  chainId,
-                  resultCount: Object.keys(results).length,
-                  blockNumber: latestBlockNumber,
-                  sampleResults: Object.entries(results)
-                    .slice(0, 2)
-                    .map(([key, value]) => ({
-                      callKey: key.substring(0, 80) + '...',
-                      hasData: !!value,
-                      dataLength: value?.length || 0,
-                      dataPreview: value?.substring(0, 42) || 'null',
-                    })),
-                });
-              }
               dispatch(
                 updateV3MulticallResults({
                   chainId,

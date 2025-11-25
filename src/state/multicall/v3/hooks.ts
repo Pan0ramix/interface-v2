@@ -118,21 +118,8 @@ function useCallsData(
         const result = callResults[chainId]?.[callKey];
         let data;
 
-        // Minimal debug logging - only log when data structure looks wrong
-        if (
-          process.env.NODE_ENV === 'development' &&
-          chainId !== undefined &&
-          Number(chainId) === 84532 &&
-          result &&
-          !result?.data
-        ) {
-          // Only log if result exists but data is missing
-          console.warn('CallResult missing data field', {
-            callKey: callKey.substring(0, 80) + '...',
-            resultKeys: Object.keys(result || {}),
-            fullResult: result,
-          });
-        }
+        // Note: Warnings about missing data during initial load are expected
+        // They occur when fetchingBlockNumber is set but data hasn't arrived yet
 
         if (result?.data && result?.data !== '0x') {
           data = result.data;

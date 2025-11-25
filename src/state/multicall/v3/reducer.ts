@@ -102,20 +102,7 @@ export default createReducer(initialState, (builder) =>
             };
           }
 
-          // Debug logging for Base Sepolia
-          if (
-            process.env.NODE_ENV === 'development' &&
-            chainId !== undefined &&
-            Number(chainId) === 84532
-          ) {
-            console.log('Reducer: Updating fetchingBlockNumber', {
-              callKey: callKey.substring(0, 80) + '...',
-              fetchingBlockNumber,
-              preservedData: !!current?.data,
-              preservedBlockNumber: current?.blockNumber,
-              finalObject: state.callResults[chainId][callKey],
-            });
-          }
+          // Debug logging removed - multicall working correctly
         });
       },
     )
@@ -160,22 +147,6 @@ export default createReducer(initialState, (builder) =>
           }
 
           state.callResults[chainId][callKey] = newResult;
-          // Debug logging for Base Sepolia to see what's being stored
-          if (
-            process.env.NODE_ENV === 'development' &&
-            chainId !== undefined &&
-            Number(chainId) === 84532
-          ) {
-            console.log('Reducer: Storing multicall result', {
-              callKey: callKey.substring(0, 80) + '...',
-              hasData: !!results[callKey],
-              dataLength: results[callKey]?.length || 0,
-              dataPreview: results[callKey]?.substring(0, 42) || 'null',
-              currentHadData: !!current?.data,
-              storedObject: state.callResults[chainId][callKey],
-              storedHasData: !!state.callResults[chainId][callKey]?.data,
-            });
-          }
         });
       },
     ),

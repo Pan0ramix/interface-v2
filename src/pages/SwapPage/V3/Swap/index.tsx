@@ -120,6 +120,8 @@ const SwapV3Page: React.FC = () => {
     inputError: swapInputError,
   } = useDerivedSwapInfo();
 
+  // Debug logging removed - multicall working correctly
+
   const {
     wrapType,
     execute: onWrap,

@@ -25,6 +25,7 @@ export const rpcMap = {
   [ChainId.MINATO]: 'https://rpc.minato.soneium.org',
   [ChainId.SONEIUM]: 'https://rpc.soneium.org/',
   [ChainId.SOMNIA]: 'https://dream-rpc.somnia.network/',
+  84532: 'https://sepolia.base.org', // Base Sepolia
 };
 
 class AppJsonRpcProvider extends StaticJsonRpcProvider {
