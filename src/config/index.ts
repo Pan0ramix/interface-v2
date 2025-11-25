@@ -14,6 +14,7 @@ import layerX from './layerx.json';
 import minato from './minato.json';
 import soneium from './soneium.json';
 import somnia from './somnia.json';
+import basesepolia from './basesepolia.json';
 import orderlyFeeTiers from './orderlyFeeTiers.json';
 import { ChainId } from '@uniswap/sdk';
 
@@ -33,6 +34,7 @@ const configs: any = {
   [ChainId.MINATO]: minato,
   [ChainId.SONEIUM]: soneium,
   [ChainId.SOMNIA]: somnia,
+  84532: basesepolia, // Base Sepolia
 };
 
 export const getConfig = (network: ChainId | undefined) => {

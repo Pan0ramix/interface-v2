@@ -1,4 +1,4 @@
-import { WETH, ETHER, Token } from '@uniswap/sdk';
+import { WETH, ETHER, Token, ChainId } from '@uniswap/sdk';
 import { Currency } from '@uniswap/sdk-core';
 import { useMemo, useState } from 'react';
 import { tryParseAmount } from 'state/swap/v3/hooks';
@@ -7,7 +7,10 @@ import { useCurrencyBalance } from 'state/wallet/v3/hooks';
 import { useActiveWeb3React } from 'hooks';
 import { useWETHContract } from './useContract';
 import { TransactionType } from 'models/enums';
-import { ETHER as ETHER_CURRENCY } from 'constants/v3/addresses';
+import {
+  ETHER as ETHER_CURRENCY,
+  WMATIC_EXTENDED,
+} from 'constants/v3/addresses';
 
 export enum WrapType {
   NOT_APPLICABLE,
@@ -45,8 +48,26 @@ export default function useWrapCallback(
   const [wrapping, setWrapping] = useState(false);
   const [unwrapping, setUnWrapping] = useState(false);
 
+  // Get wrapped native token (WETH or WMATIC_EXTENDED)
+  const wrappedNativeToken = useMemo(() => {
+    if (!chainId) return undefined;
+    return WETH[chainId as ChainId] || WMATIC_EXTENDED[chainId];
+  }, [chainId]);
+
+  // Get native currency symbol
+  const nativeSymbol = useMemo(() => {
+    if (!chainId) return 'ETH';
+    return ETHER[chainId as ChainId]?.symbol || 'ETH';
+  }, [chainId]);
+
   return useMemo(() => {
-    if (!wethContract || !chainId || !inputCurrency || !outputCurrency)
+    if (
+      !wethContract ||
+      !chainId ||
+      !inputCurrency ||
+      !outputCurrency ||
+      !wrappedNativeToken
+    )
       return NOT_APPLICABLE;
 
     if (!inputAmount)
@@ -63,7 +84,7 @@ export default function useWrapCallback(
       outputCurrency.wrapped &&
       outputCurrency.wrapped.address &&
       outputCurrency.wrapped.address.toLowerCase() ===
-        WETH[chainId].address.toLowerCase()
+        wrappedNativeToken.address.toLowerCase()
     ) {
       return {
         wrapType: wrapping ? WrapType.WRAPPING : WrapType.WRAP,
@@ -76,11 +97,13 @@ export default function useWrapCallback(
                     value: `0x${inputAmount.numerator.toString(16)}`,
                   });
                   addTransaction(txReceipt, {
-                    summary: `Wrap ${inputAmount.toSignificant(2)} ${
-                      ETHER[chainId].symbol
-                    } to ${WETH[chainId].symbol}`,
+                    summary: `Wrap ${inputAmount.toSignificant(
+                      2,
+                    )} ${nativeSymbol} to ${wrappedNativeToken.symbol}`,
                     type: TransactionType.WRAP,
-                    tokens: [Token.ETHER[chainId]],
+                    tokens: Token.ETHER[chainId as ChainId]
+                      ? [Token.ETHER[chainId as ChainId]]
+                      : [],
                   });
                   await txReceipt.wait();
                   setWrapping(false);
@@ -92,12 +115,12 @@ export default function useWrapCallback(
             : undefined,
         inputError: sufficientBalance
           ? undefined
-          : `Insufficient ${ETHER[chainId].symbol}`,
+          : `Insufficient ${nativeSymbol}`,
       };
     } else if (
       inputCurrency.wrapped &&
       inputCurrency.wrapped.address &&
-      WETH[chainId].address.toLowerCase() ===
+      wrappedNativeToken.address.toLowerCase() ===
         inputCurrency.wrapped.address.toLowerCase() &&
       outputCurrency.isNative
     ) {
@@ -113,10 +136,12 @@ export default function useWrapCallback(
                   );
                   addTransaction(txReceipt, {
                     summary: `Unwrap ${inputAmount.toSignificant(2)} ${
-                      WETH[chainId].symbol
-                    } to ${ETHER[chainId].symbol}`,
+                      wrappedNativeToken.symbol
+                    } to ${nativeSymbol}`,
                     type: TransactionType.UNWRAP,
-                    tokens: [Token.ETHER[chainId]],
+                    tokens: Token.ETHER[chainId as ChainId]
+                      ? [Token.ETHER[chainId as ChainId]]
+                      : [],
                   });
                   await txReceipt.wait();
                   setUnWrapping(false);
@@ -128,7 +153,7 @@ export default function useWrapCallback(
             : undefined,
         inputError: sufficientBalance
           ? undefined
-          : `Insufficient ${WETH[chainId].symbol}`,
+          : `Insufficient ${wrappedNativeToken.symbol}`,
       };
     } else {
       return NOT_APPLICABLE;
@@ -143,5 +168,7 @@ export default function useWrapCallback(
     wrapping,
     unwrapping,
     addTransaction,
+    wrappedNativeToken,
+    nativeSymbol,
   ]);
 }

@@ -35,11 +35,35 @@ export default function useSwapRedirects() {
   const redirectWithCurrency = useCallback(
     (currency: any, isInput: boolean, isV2 = true) => {
       let redirectPath = '';
+      // Extract address from various currency formats
+      const currencyAddress =
+        currency?.address ||
+        currency?.wrapped?.address ||
+        (currency?.tokenInfo?.address ? currency.tokenInfo.address : undefined);
+
+      if (!currencyAddress && !currency?.isNative && !isEther(currency)) {
+        console.error('Currency address not found:', currency);
+      }
+
       const currencyId = (isV2
       ? isEther(currency)
-      : currency.isNative)
+      : currency?.isNative)
         ? 'ETH'
-        : currency.address;
+        : currencyAddress;
+
+      console.log('🔗 redirectWithCurrency called:', {
+        currency,
+        currencyType: currency?.constructor?.name,
+        isInput,
+        isV2,
+        currencyAddress,
+        currencyId,
+        isNative: currency?.isNative,
+        hasAddress: !!currency?.address,
+        hasWrapped: !!currency?.wrapped,
+        hasTokenInfo: !!(currency as any)?.tokenInfo,
+        tokenInfoAddress: (currency as any)?.tokenInfo?.address,
+      });
       if (isInput) {
         if (parsedQs.currency0 ?? parsedQs.inputCurrency) {
           if (parsedQs.currency0) {
@@ -77,7 +101,22 @@ export default function useSwapRedirects() {
           }currency1=${currencyId}`;
         }
       }
-      history.push(redirectPath);
+      // Only push to history if the path actually changed
+      if (redirectPath && redirectPath !== currentPath) {
+        console.log('🔗 Redirecting to:', redirectPath, 'from:', currentPath);
+        console.log('💰 Currency details:', {
+          currencyId,
+          isNative: currency?.isNative,
+          address: currencyAddress,
+        });
+        history.push(redirectPath);
+      } else {
+        console.warn('⚠️ Not redirecting - path unchanged:', {
+          redirectPath,
+          currentPath,
+          currencyId,
+        });
+      }
     },
     [
       currentPath,

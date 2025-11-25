@@ -12,7 +12,10 @@ import { AppState } from 'state';
 import useDebounce from 'hooks/useDebounce';
 import { useBlockNumber } from 'state/application/hooks';
 import { retry, RetryableError } from 'utils/retry';
-import { useMulticall2Contract } from 'hooks/useContract';
+import {
+  useMulticall2Contract,
+  useMulticall3Contract,
+} from 'hooks/useContract';
 import { getConfig } from 'config/index';
 
 const DEFAULT_CALL_GAS_REQUIRED = 10_000_000;
@@ -21,19 +24,33 @@ const CHUNK_SIZE = 100;
 
 /**
  * Fetches a chunk of calls, enforcing a minimum block number constraint
- * @param multicall multicall contract to fetch against
+ * @param multicall2 AlgebraInterfaceMulticall contract (for non-Base chains)
+ * @param multicall3 Multicall3 contract (for Base Sepolia)
  * @param chunk chunk of calls to make
  * @param blockNumber block number passed as the block tag in the eth_call
+ * @param chainId chain ID to determine which multicall to use
  */
 async function fetchChunk(
-  multicall: any,
+  multicall2: any,
+  multicall3: any,
   chunk: Call[],
   blockNumber: number,
   chainId?: number,
+  provider?: any,
 ): Promise<{ success: boolean; returnData: string }[]> {
   const config = getConfig(chainId);
   const maxChunks = config['maxChunks'] ?? CHUNK_SIZE;
-  console.debug('Fetching chunk', chunk, blockNumber);
+  // Base Sepolia (84532) is not in ChainId enum, so we check the number value
+  const isBaseSepolia = chainId === 84532 || Number(chainId) === 84532;
+
+  // Base Sepolia uses Multicall3, all other chains use AlgebraInterfaceMulticall
+  // Verify we're not accidentally using Multicall2 for Base Sepolia
+  if (isBaseSepolia && multicall2 && !multicall3) {
+    console.error(
+      'ERROR: Base Sepolia requires Multicall3 but it is not available. Multicall2 will not work.',
+    );
+  }
+
   let finalReturnData: any = [];
   try {
     for (let i = 0; i < chunk.length; i = i + maxChunks) {
@@ -41,21 +58,123 @@ async function fetchChunk(
         i,
         i + maxChunks > chunk.length ? chunk.length : i + maxChunks,
       );
-      console.debug(localChunk.length);
-      const { returnData } = await multicall.callStatic.multicall(
-        localChunk.map((obj) => ({
-          target: obj.address,
-          callData: obj.callData,
-          gasLimit: obj.gasRequired ?? DEFAULT_CALL_GAS_REQUIRED,
-        })),
-        { blockTag: blockNumber },
-      );
-      finalReturnData = finalReturnData.concat(returnData);
-      if (process.env.NODE_ENV === 'development') {
-        returnData.forEach((r: any, i: number) => {
+
+      if (isBaseSepolia && multicall3) {
+        // Multicall3 path: use tryAggregate (no per-call gasLimit, handles failures gracefully)
+        // Returns: Result[] where Result = {success: bool, returnData: bytes}
+        // Note: tryAggregate with requireSuccess=false never reverts, even if individual calls fail
+
+        // Removed verbose logging
+
+        if (!multicall3) {
+          const error = new Error(
+            'CRITICAL: multicall3 contract is null/undefined for Base Sepolia!',
+          );
+          console.error(error.message);
+          throw error;
+        }
+
+        if (typeof multicall3.callStatic?.tryAggregate !== 'function') {
+          const error = new Error(
+            'CRITICAL: multicall3.callStatic.tryAggregate is not a function!',
+          );
+          console.error(error.message, {
+            multicall3: multicall3,
+            callStatic: multicall3?.callStatic,
+            methods: Object.keys(multicall3?.callStatic || {}),
+          });
+          throw error;
+        }
+
+        // Removed verbose logging
+        try {
+          const resultsRaw = await multicall3.callStatic.tryAggregate(
+            false, // requireSuccess = false (allow individual failures)
+            localChunk.map((obj) => ({
+              target: obj.address,
+              callData: obj.callData,
+              // Note: Multicall3 tryAggregate doesn't support per-call gasLimit
+            })),
+            { blockTag: blockNumber },
+          );
+
+          // Removed verbose logging
+
+          // Adapt Multicall3 tryAggregate results to match AlgebraInterfaceMulticall format
+          // Multicall3 tryAggregate returns {success: bool, returnData: bytes}[]
+          // We need {success: bool, gasUsed: uint256, returnData: bytes}[]
+          const adaptedResults = resultsRaw.map(
+            (r: { success: boolean; returnData: string }, idx: number) => {
+              const result = {
+                success: r.success,
+                gasUsed: { toString: () => '0', gte: () => false }, // Multicall3 doesn't provide gasUsed; we don't need it for reads
+                returnData: r.returnData || '0x',
+              };
+
+              // Debug failed calls
+              if (!r.success && process.env.NODE_ENV === 'development') {
+                console.warn('Multicall3 call failed', {
+                  index: idx,
+                  target: localChunk[idx]?.address,
+                  selector: localChunk[idx]?.callData?.slice(0, 10),
+                  returnData: r.returnData || '0x',
+                });
+              }
+
+              return result;
+            },
+          );
+
+          // Removed verbose logging
+
+          finalReturnData = finalReturnData.concat(adaptedResults);
+        } catch (tryAggregateError) {
+          console.error('Multicall3 tryAggregate call failed', {
+            chainId,
+            error: tryAggregateError?.message || tryAggregateError,
+            errorCode: tryAggregateError?.code,
+            callCount: localChunk.length,
+            multicallAddress: multicall3?.address,
+          });
+          // Re-throw to let the error handler below catch it
+          throw tryAggregateError;
+        }
+      } else if (multicall2) {
+        // AlgebraInterfaceMulticall path: use multicall (with per-call gasLimit)
+        // Returns: (blockNumber, returnData[]) where returnData[] is {success: bool, gasUsed: uint256, returnData: bytes}[]
+        const { returnData } = await multicall2.callStatic.multicall(
+          localChunk.map((obj) => ({
+            target: obj.address,
+            callData: obj.callData,
+            gasLimit: obj.gasRequired ?? DEFAULT_CALL_GAS_REQUIRED,
+          })),
+          { blockTag: blockNumber },
+        );
+        finalReturnData = finalReturnData.concat(returnData);
+      } else {
+        // No multicall contract available, return failed results
+        finalReturnData = finalReturnData.concat(
+          localChunk.map(() => ({
+            success: false,
+            returnData: '0x',
+          })),
+        );
+        continue;
+      }
+      // Log gas usage warnings (only for AlgebraInterfaceMulticall as it provides gasUsed)
+      if (
+        process.env.NODE_ENV === 'development' &&
+        !isBaseSepolia &&
+        finalReturnData.length > 0
+      ) {
+        const lastChunkResults = finalReturnData.slice(-localChunk.length);
+        lastChunkResults.forEach((r: any, i: number) => {
           if (
             !r.success &&
+            r.returnData &&
             r.returnData.length === 2 &&
+            r.gasUsed &&
+            typeof r.gasUsed.gte === 'function' &&
             r.gasUsed.gte(
               Math.floor(
                 (localChunk[i].gasRequired ?? DEFAULT_CALL_GAS_REQUIRED) * 0.95,
@@ -75,15 +194,17 @@ async function fetchChunk(
     return finalReturnData;
   } catch (error) {
     if (
-      error.error.code === -32000 ||
-      error.error.message?.indexOf('header not found') !== -1
+      error.error?.code === -32000 ||
+      error.error?.message?.indexOf('header not found') !== -1
     ) {
       throw new RetryableError(
         `header not found for block number ${blockNumber}`,
       );
     } else if (
-      error.error.code === -32603 ||
-      error.error.message?.indexOf('execution ran out of gas') !== -1
+      error.error?.code === -32603 ||
+      error.error?.message?.indexOf('execution ran out of gas') !== -1 ||
+      error.error?.code === 3 ||
+      error.message?.indexOf('execution reverted') !== -1
     ) {
       if (chunk.length > 1) {
         if (process.env.NODE_ENV === 'development') {
@@ -91,19 +212,81 @@ async function fetchChunk(
         }
         const half = Math.floor(chunk.length / 2);
         const [c0, c1] = await Promise.all([
-          fetchChunk(multicall, chunk.slice(0, half), blockNumber, chainId),
           fetchChunk(
-            multicall,
+            multicall2,
+            multicall3,
+            chunk.slice(0, half),
+            blockNumber,
+            chainId,
+            provider,
+          ),
+          fetchChunk(
+            multicall2,
+            multicall3,
             chunk.slice(half, chunk.length),
             blockNumber,
             chainId,
+            provider,
           ),
         ]);
         return c0.concat(c1);
       }
+      // If single call fails and it's a revert error, return failed results instead of throwing
+      // This prevents the entire multicall from failing and blocking the UI
+      if (process.env.NODE_ENV === 'development') {
+        console.warn(
+          `Multicall failed for chunk, returning failed results to prevent blocking:`,
+          chunk.length,
+          error?.message || error,
+        );
+
+        // Debug fallback: For Base Sepolia, try individual calls to isolate the failing one
+        if (isBaseSepolia && provider) {
+          console.warn(
+            'Attempting to isolate failing calls on Base Sepolia by testing individually...',
+          );
+          for (const obj of chunk) {
+            try {
+              const ret = await provider.call(
+                {
+                  to: obj.address,
+                  data: obj.callData,
+                },
+                blockNumber,
+              );
+              console.debug('Single call success', {
+                target: obj.address,
+                selector: obj.callData.slice(0, 10),
+                returnDataLength: ret?.length || 0,
+              });
+            } catch (singleError) {
+              console.error('Single call FAILED', {
+                target: obj.address,
+                selector: obj.callData.slice(0, 10),
+                error:
+                  singleError?.message || singleError?.reason || singleError,
+                callDataLength: obj.callData.length,
+              });
+            }
+          }
+        }
+      }
+      // Return failed results for all calls in the chunk so the app doesn't hang
+      return chunk.map(() => ({
+        success: false,
+        returnData: '0x',
+      }));
     }
-    console.error('Failed to fetch chunk', error);
-    throw error;
+    // For any other error, log it but still return failed results instead of throwing
+    // This ensures the app continues to function even when multicall completely fails
+    console.error(
+      'Failed to fetch chunk, returning failed results to prevent blocking:',
+      error?.message || error,
+    );
+    return chunk.map(() => ({
+      success: false,
+      returnData: '0x',
+    }));
   }
 }
 
@@ -185,8 +368,9 @@ export default function Updater(): null {
   // wait for listeners to settle before triggering updates
   const debouncedListeners = useDebounce(state.callListeners, 1000);
   const latestBlockNumber = useBlockNumber();
-  const { chainId } = useActiveWeb3React();
+  const { chainId, provider } = useActiveWeb3React();
   const multicall2Contract = useMulticall2Contract();
+  const multicall3Contract = useMulticall3Contract();
   const cancellations = useRef<{
     blockNumber: number;
     cancellations: (() => void)[];
@@ -213,7 +397,17 @@ export default function Updater(): null {
   const chunkGasLimit = 100_000_000;
 
   useEffect(() => {
-    if (!latestBlockNumber || !chainId || !multicall2Contract) return;
+    // For Base Sepolia, use Multicall3; for other chains, use AlgebraInterfaceMulticall
+    // Base Sepolia (84532) is not in ChainId enum, so we check the number value
+    // Cast to number since Base Sepolia isn't part of the ChainId enum
+    const isBaseSepolia =
+      chainId !== undefined && (chainId as number) === 84532;
+    const activeMulticall = isBaseSepolia
+      ? multicall3Contract
+      : multicall2Contract;
+
+    // Ensure we have a valid multicall contract for the current chain
+    if (!latestBlockNumber || !chainId || !activeMulticall) return;
 
     const outdatedCallKeys: string[] = JSON.parse(serializedOutdatedCallKeys);
     if (outdatedCallKeys.length === 0) return;
@@ -241,7 +435,14 @@ export default function Updater(): null {
       cancellations: chunkedCalls.map((chunk, index) => {
         const { cancel, promise } = retry(
           () =>
-            fetchChunk(multicall2Contract, chunk, latestBlockNumber, chainId),
+            fetchChunk(
+              multicall2Contract,
+              multicall3Contract,
+              chunk,
+              latestBlockNumber,
+              chainId,
+              provider,
+            ),
           {
             n: Infinity,
             minWait: 1000,
@@ -267,11 +468,37 @@ export default function Updater(): null {
               results: { [callKey: string]: string | null };
             }>(
               (memo, call, i) => {
+                const callKey = toCallKey(call);
                 if (returnData[i].success) {
-                  memo.results[toCallKey(call)] =
-                    returnData[i].returnData ?? null;
+                  const returnDataValue = returnData[i].returnData ?? null;
+                  memo.results[callKey] = returnDataValue;
+
+                  // Minimal logging - only log failures
+                  if (
+                    process.env.NODE_ENV === 'development' &&
+                    chainId !== undefined &&
+                    Number(chainId) === 84532 &&
+                    !returnDataValue
+                  ) {
+                    console.warn('Multicall: Storing null returnData', {
+                      callKey: callKey.substring(0, 80) + '...',
+                      callAddress: call.address,
+                    });
+                  }
                 } else {
                   memo.erroredCalls.push(call);
+                  if (
+                    process.env.NODE_ENV === 'development' &&
+                    chainId !== undefined &&
+                    Number(chainId) === 84532
+                  ) {
+                    console.warn('Multicall call failed, not storing result', {
+                      chainId,
+                      callKey,
+                      callAddress: call.address,
+                      callSelector: call.callData?.slice(0, 10),
+                    });
+                  }
                 }
                 return memo;
               },
@@ -279,7 +506,27 @@ export default function Updater(): null {
             );
 
             // dispatch any new results
-            if (Object.keys(results).length > 0)
+            if (Object.keys(results).length > 0) {
+              // Debug logging for Base Sepolia
+              if (
+                process.env.NODE_ENV === 'development' &&
+                chainId !== undefined &&
+                Number(chainId) === 84532
+              ) {
+                console.log('Dispatching updateV3MulticallResults', {
+                  chainId,
+                  resultCount: Object.keys(results).length,
+                  blockNumber: latestBlockNumber,
+                  sampleResults: Object.entries(results)
+                    .slice(0, 2)
+                    .map(([key, value]) => ({
+                      callKey: key.substring(0, 80) + '...',
+                      hasData: !!value,
+                      dataLength: value?.length || 0,
+                      dataPreview: value?.substring(0, 42) || 'null',
+                    })),
+                });
+              }
               dispatch(
                 updateV3MulticallResults({
                   chainId,
@@ -287,6 +534,7 @@ export default function Updater(): null {
                   blockNumber: latestBlockNumber,
                 }),
               );
+            }
 
             // dispatch any errored calls
             if (erroredCalls.length > 0) {
@@ -318,7 +566,12 @@ export default function Updater(): null {
               );
               return;
             }
-            // console.error('Failed to fetch multicall chunk', chunk, chainId, error)
+            // When multicall fails completely (e.g., contract not deployed),
+            // mark all calls as errored so the app doesn't hang waiting
+            console.warn(
+              'Multicall chunk failed completely, marking all calls as errored to prevent blocking:',
+              error.message || error,
+            );
             dispatch(
               errorFetchingV3MulticallResults({
                 calls: chunk,
@@ -333,9 +586,11 @@ export default function Updater(): null {
   }, [
     chainId,
     multicall2Contract,
+    multicall3Contract,
     dispatch,
     serializedOutdatedCallKeys,
     latestBlockNumber,
+    provider,
   ]);
 
   return null;

@@ -65,7 +65,10 @@ const CurrencyList: React.FC<CurrencyListProps> = ({
       const otherSelected = Boolean(
         otherCurrency && currencyEquals(otherCurrency, currency),
       );
-      const handleSelect = () => onCurrencySelect(currency);
+      const handleSelect = () => {
+        console.log('📋 CurrencyList handleSelect called with:', currency);
+        onCurrencySelect(currency);
+      };
       const token =
         currencyEquals(currency, ETHER[chainId]) || currency.isNative
           ? WETH[chainId]

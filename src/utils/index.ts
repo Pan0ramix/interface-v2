@@ -234,11 +234,14 @@ export function maxAmountSpend(
 ): CurrencyAmount | undefined {
   if (!currencyAmount) return undefined;
   if (currencyAmount.currency === ETHER[chainId]) {
-    if (
-      JSBI.greaterThan(currencyAmount.raw, MIN_NATIVE_CURRENCY_FOR_GAS[chainId])
-    ) {
+    const minGas = MIN_NATIVE_CURRENCY_FOR_GAS[chainId];
+    if (!minGas) {
+      // If MIN_NATIVE_CURRENCY_FOR_GAS is not defined for this chain, return the full amount
+      return currencyAmount;
+    }
+    if (JSBI.greaterThan(currencyAmount.raw, minGas)) {
       return CurrencyAmount.ether(
-        JSBI.subtract(currencyAmount.raw, MIN_NATIVE_CURRENCY_FOR_GAS[chainId]),
+        JSBI.subtract(currencyAmount.raw, minGas),
         chainId,
       );
     } else {
@@ -256,7 +259,12 @@ export function halfAmountSpend(
   const halfAmount = JSBI.divide(currencyAmount.raw, JSBI.BigInt(2));
 
   if (currencyAmount.currency === ETHER[chainId]) {
-    if (JSBI.greaterThan(halfAmount, MIN_NATIVE_CURRENCY_FOR_GAS[chainId])) {
+    const minGas = MIN_NATIVE_CURRENCY_FOR_GAS[chainId];
+    if (!minGas) {
+      // If MIN_NATIVE_CURRENCY_FOR_GAS is not defined for this chain, return the half amount
+      return CurrencyAmount.ether(halfAmount, chainId);
+    }
+    if (JSBI.greaterThan(halfAmount, minGas)) {
       return CurrencyAmount.ether(halfAmount, chainId);
     } else {
       return CurrencyAmount.ether(JSBI.BigInt(0), chainId);

@@ -50,12 +50,16 @@ export function useETHBalances(
     addresses.map((address) => [address]),
   );
 
+  const etherCurrency = ETHER[chainId as ChainId];
+
   return useMemo(
     () =>
       addresses.reduce<{ [address: string]: CurrencyAmount }>(
         (memo, address, i) => {
           const value = results?.[i]?.result?.[0];
-          if (value) {
+          // Only create balance if ETHER[chainId] exists (chains in ChainId enum)
+          // For chains not in enum (like Base Sepolia), skip as they use v3 hooks
+          if (value && etherCurrency) {
             memo[address] = CurrencyAmount.ether(
               JSBI.BigInt(value.toString()),
               chainId,
@@ -65,7 +69,7 @@ export function useETHBalances(
         },
         {},
       ),
-    [addresses, results, chainId],
+    [addresses, results, chainId, etherCurrency],
   );
 }
 
@@ -253,15 +257,18 @@ export async function getETHBalancesImmediately(
     blockNumber,
   );
 
+  const etherCurrency = ETHER[chainId as ChainId];
+
   const ret = addresses.reduce<{ [address: string]: CurrencyAmount }>(
     (memo, address, i) => {
       const value = results?.[i]?.result?.[0];
-      if (value) {
+      if (value && etherCurrency) {
         memo[address] = CurrencyAmount.ether(
           JSBI.BigInt(value.toString()),
           chainId,
         );
       }
+      // For chains not in ETHER mapping (like Base Sepolia), skip creating balance
       return memo;
     },
     {},

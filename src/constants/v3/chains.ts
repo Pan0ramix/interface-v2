@@ -164,4 +164,14 @@ export const CHAIN_INFO: ChainInfo = {
     nativeCurrencyName: 'Somnia Token',
     nativeCurrencyDecimals: 18,
   },
+  84532: {
+    // Base Sepolia
+    docs: 'https://algebra.finance/',
+    explorer: 'https://sepolia.basescan.org',
+    infoLink: 'https://algebra.finance',
+    label: 'Base Sepolia',
+    nativeCurrencySymbol: 'ETH',
+    nativeCurrencyName: 'Ether',
+    nativeCurrencyDecimals: 18,
+  },
 };

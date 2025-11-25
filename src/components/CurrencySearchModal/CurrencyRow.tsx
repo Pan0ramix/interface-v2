@@ -165,9 +165,26 @@ const CurrencyRow: React.FC<CurrenyRowProps> = ({
       />
       <ListItem
         button
-        style={{ ...style, paddingLeft: '0' }}
+        style={{ ...style, paddingLeft: '0', cursor: 'pointer' }}
         key={key}
         selected={otherSelected || isSelected}
+        onClick={(e) => {
+          console.log('🖱️ ListItem clicked:', {
+            currency: currency?.symbol,
+            isSelected,
+            otherSelected,
+            willSelect: !isSelected && !otherSelected,
+          });
+          if (!isSelected && !otherSelected) {
+            e.preventDefault();
+            e.stopPropagation();
+            console.log(
+              '✅ Calling onSelect from ListItem for:',
+              currency?.symbol,
+            );
+            onSelect();
+          }
+        }}
       >
         <Box className='currencyRow'>
           {/* {(otherSelected || isSelected) && <TokenSelectedIcon />} */}
@@ -179,14 +196,7 @@ const CurrencyRow: React.FC<CurrenyRowProps> = ({
               checkedIcon={<StarIcon style={{ color: '#d3e200' }} />}
             />
           )}
-          <Box
-            display='flex'
-            alignItems='center'
-            flex='1 1 100%'
-            onClick={() => {
-              if (!isSelected && !otherSelected) onSelect();
-            }}
-          >
+          <Box display='flex' alignItems='center' flex='1 1 100%'>
             <CurrencyLogo currency={currency} size='32px' />
             <Box ml={1} height={32}>
               <Box className='flex items-center'>

@@ -12,20 +12,15 @@ export function maxAmountSpend(
 ): CurrencyAmount<Currency> | undefined {
   if (!currencyAmount) return undefined;
   if (currencyAmount.currency.isNative) {
-    if (
-      JSBI.greaterThan(
-        currencyAmount.quotient,
-        MIN_NATIVE_CURRENCY_FOR_GAS[currencyAmount.currency.chainId as ChainId],
-      )
-    ) {
+    const minGas = MIN_NATIVE_CURRENCY_FOR_GAS[currencyAmount.currency.chainId];
+    if (!minGas) {
+      // If MIN_NATIVE_CURRENCY_FOR_GAS is not defined for this chain, return the full amount
+      return currencyAmount;
+    }
+    if (JSBI.greaterThan(currencyAmount.quotient, minGas)) {
       return CurrencyAmount.fromRawAmount(
         currencyAmount.currency,
-        JSBI.subtract(
-          currencyAmount.quotient,
-          MIN_NATIVE_CURRENCY_FOR_GAS[
-            currencyAmount.currency.chainId as ChainId
-          ],
-        ),
+        JSBI.subtract(currencyAmount.quotient, minGas),
       );
     } else {
       return CurrencyAmount.fromRawAmount(
@@ -43,12 +38,12 @@ export function halfAmountSpend(
   if (!currencyAmount) return undefined;
   const halfAmount = currencyAmount.divide('2');
   if (currencyAmount.currency.isNative) {
-    if (
-      JSBI.greaterThan(
-        halfAmount.quotient,
-        MIN_NATIVE_CURRENCY_FOR_GAS[currencyAmount.currency.chainId as ChainId],
-      )
-    ) {
+    const minGas = MIN_NATIVE_CURRENCY_FOR_GAS[currencyAmount.currency.chainId];
+    if (!minGas) {
+      // If MIN_NATIVE_CURRENCY_FOR_GAS is not defined for this chain, return the half amount
+      return halfAmount;
+    }
+    if (JSBI.greaterThan(halfAmount.quotient, minGas)) {
       return halfAmount;
     } else {
       return CurrencyAmount.fromRawAmount(

@@ -1,4 +1,4 @@
-import { JSBI, Trade as V2Trade, WETH } from '@uniswap/sdk';
+import { ChainId, JSBI, Trade as V2Trade, WETH } from '@uniswap/sdk';
 import { Currency, Percent, TradeType } from '@uniswap/sdk-core';
 import { useActiveWeb3React } from 'hooks';
 import { Trade as V3Trade } from 'lib/src/trade';
@@ -9,6 +9,7 @@ import { wrappedCurrency } from 'utils/wrappedCurrency';
 import { formatUnits } from 'ethers/lib/utils';
 import { OptimalRate } from '@paraswap/sdk';
 import { Percent as V2Percent } from '@uniswap/sdk';
+import { WMATIC_EXTENDED } from 'constants/v3/addresses';
 
 const DEFAULT_AUTO_SLIPPAGE = new Percent(5, 1000);
 const MIN_AUTO_SLIPPAGE_TOLERANCE = DEFAULT_AUTO_SLIPPAGE;
@@ -66,11 +67,19 @@ export function useAutoSlippageTolerance(
     nativeGasPrice && gasEstimate
       ? JSBI.multiply(nativeGasPrice, JSBI.BigInt(gasEstimate))
       : undefined;
-  const nativeUSDPrice = useUSDCPriceFromAddress(WETH[chainId].address);
-  const gasCostUSD = nativeGasCost
-    ? Number(formatUnits(nativeGasCost.toString(), WETH[chainId].decimals)) *
-      nativeUSDPrice.price
-    : undefined;
+  const wrappedNativeToken =
+    chainId && WETH[chainId as ChainId]
+      ? WETH[chainId as ChainId]
+      : chainId && WMATIC_EXTENDED[chainId]
+      ? WMATIC_EXTENDED[chainId]
+      : undefined;
+  const nativeUSDPrice = useUSDCPriceFromAddress(wrappedNativeToken?.address);
+  const gasCostUSD =
+    nativeGasCost && wrappedNativeToken
+      ? Number(
+          formatUnits(nativeGasCost.toString(), wrappedNativeToken.decimals),
+        ) * nativeUSDPrice.price
+      : undefined;
 
   return useMemo(() => {
     if (!trade) return DEFAULT_AUTO_SLIPPAGE;

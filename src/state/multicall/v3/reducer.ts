@@ -40,16 +40,8 @@ export default createReducer(initialState, (builder) =>
   builder
     .addCase(
       addV3MulticallListeners,
-      (
-        state,
-        {
-          payload: {
-            calls,
-            chainId,
-            options: { blocksPerFetch },
-          },
-        },
-      ) => {
+      (state, { payload: { calls, chainId, options } }) => {
+        const blocksPerFetch = options?.blocksPerFetch ?? 1;
         const listeners: MulticallV3State['callListeners'] = state.callListeners
           ? state.callListeners
           : (state.callListeners = {});
@@ -64,16 +56,8 @@ export default createReducer(initialState, (builder) =>
     )
     .addCase(
       removeV3MulticallListeners,
-      (
-        state,
-        {
-          payload: {
-            chainId,
-            calls,
-            options: { blocksPerFetch },
-          },
-        },
-      ) => {
+      (state, { payload: { chainId, calls, options } }) => {
+        const blocksPerFetch = options?.blocksPerFetch ?? 1;
         const listeners: MulticallV3State['callListeners'] = state.callListeners
           ? state.callListeners
           : (state.callListeners = {});
@@ -99,16 +83,38 @@ export default createReducer(initialState, (builder) =>
         calls.forEach((call) => {
           const callKey = toCallKey(call);
           const current = state.callResults[chainId][callKey];
-          if (!current) {
+          if ((current?.fetchingBlockNumber ?? 0) >= fetchingBlockNumber)
+            return;
+
+          // CRITICAL: Always preserve existing data and blockNumber when updating fetchingBlockNumber
+          // This prevents fetchingBlockNumber updates from overwriting actual result data
+          if (current) {
+            // Entry exists - preserve ALL existing fields, only update fetchingBlockNumber
+            // Use spread operator to ensure all fields are preserved
             state.callResults[chainId][callKey] = {
+              ...current,
               fetchingBlockNumber,
             };
           } else {
-            if ((current.fetchingBlockNumber ?? 0) >= fetchingBlockNumber)
-              return;
-            state.callResults[chainId][
-              callKey
-            ].fetchingBlockNumber = fetchingBlockNumber;
+            // No existing entry - create new one with just fetchingBlockNumber
+            state.callResults[chainId][callKey] = {
+              fetchingBlockNumber,
+            };
+          }
+
+          // Debug logging for Base Sepolia
+          if (
+            process.env.NODE_ENV === 'development' &&
+            chainId !== undefined &&
+            Number(chainId) === 84532
+          ) {
+            console.log('Reducer: Updating fetchingBlockNumber', {
+              callKey: callKey.substring(0, 80) + '...',
+              fetchingBlockNumber,
+              preservedData: !!current?.data,
+              preservedBlockNumber: current?.blockNumber,
+              finalObject: state.callResults[chainId][callKey],
+            });
           }
         });
       },
@@ -137,10 +143,39 @@ export default createReducer(initialState, (builder) =>
         Object.keys(results).forEach((callKey) => {
           const current = state.callResults[chainId][callKey];
           if ((current?.blockNumber ?? 0) > blockNumber) return;
-          state.callResults[chainId][callKey] = {
+          // Preserve fetchingBlockNumber when storing actual data
+          // Explicitly construct the object to ensure all fields are preserved
+          const newResult: {
+            data?: string | null;
+            blockNumber?: number;
+            fetchingBlockNumber?: number;
+          } = {
             data: results[callKey],
             blockNumber,
           };
+
+          // Preserve existing fetchingBlockNumber if it exists
+          if (current?.fetchingBlockNumber !== undefined) {
+            newResult.fetchingBlockNumber = current.fetchingBlockNumber;
+          }
+
+          state.callResults[chainId][callKey] = newResult;
+          // Debug logging for Base Sepolia to see what's being stored
+          if (
+            process.env.NODE_ENV === 'development' &&
+            chainId !== undefined &&
+            Number(chainId) === 84532
+          ) {
+            console.log('Reducer: Storing multicall result', {
+              callKey: callKey.substring(0, 80) + '...',
+              hasData: !!results[callKey],
+              dataLength: results[callKey]?.length || 0,
+              dataPreview: results[callKey]?.substring(0, 42) || 'null',
+              currentHadData: !!current?.data,
+              storedObject: state.callResults[chainId][callKey],
+              storedHasData: !!state.callResults[chainId][callKey]?.data,
+            });
+          }
         });
       },
     ),

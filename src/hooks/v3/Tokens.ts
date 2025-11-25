@@ -2,7 +2,7 @@ import { parseBytes32String } from '@ethersproject/strings';
 import { Currency, Token } from '@uniswap/sdk-core';
 import { useMemo } from 'react';
 import { NEVER_RELOAD, useSingleCallResult } from 'state/multicall/v3/hooks';
-// import { useUserAddedTokens } from 'state/user/hooks';
+import { useUserAddedTokens } from 'state/user/hooks';
 import { isAddress } from 'utils';
 
 import { useActiveWeb3React } from 'hooks';
@@ -16,10 +16,9 @@ import { TokenAddressMap, useSelectedTokenList } from 'state/lists/v3/hooks';
 import { ChainId } from '@uniswap/sdk';
 import { CHAIN_INFO } from 'constants/v3/chains';
 
-// reduce token map into standard address <-> Token mapping, optionally include user added tokens
+// reduce token map into standard address <-> Token mapping
 function useTokensFromMap(
   tokenMap: TokenAddressMap,
-  includeUserAdded: boolean,
 ): { [address: string]: Token } {
   const { chainId } = useActiveWeb3React();
 
@@ -34,34 +33,47 @@ function useTokensFromMap(
       return newMap;
     }, {});
 
-    const userAddedTokens: Token[] = []; /// useUserAddedTokens();
-
-    if (includeUserAdded) {
-      return (
-        userAddedTokens
-          // reduce into all ALL_TOKENS filtered by the current chain
-          .reduce<{ [address: string]: Token }>(
-            (tokenMap, token) => {
-              tokenMap[token.address] = token;
-              return tokenMap;
-            },
-            // must make a copy because reduce modifies the map, and we do not
-            // want to make a copy in every iteration
-            { ...mapWithoutUrls },
-          )
-      );
-    }
-
     return mapWithoutUrls;
-  }, [chainId, tokenMap, includeUserAdded]);
+  }, [chainId, tokenMap]);
+}
+
+// Hook to get user added tokens converted to v3 format
+function useUserAddedTokensV3(): Token[] {
+  const { chainId } = useActiveWeb3React();
+  const userAddedTokensV2 = useUserAddedTokens();
+
+  return useMemo(() => {
+    if (!chainId) return [];
+    // Convert v2 Tokens (from @uniswap/sdk) to v3 Tokens (from @uniswap/sdk-core)
+    return userAddedTokensV2
+      .filter((token) => token.chainId === chainId)
+      .map(
+        (token) =>
+          new Token(
+            token.chainId,
+            token.address,
+            token.decimals,
+            token.symbol,
+            token.name,
+          ),
+      );
+  }, [chainId, userAddedTokensV2]);
 }
 
 export function useAllTokens(): { [address: string]: Token } {
-  // const { chainId } = useActiveWeb3React();
-
   const allTokens = useSelectedTokenList();
+  const tokensFromMap = useTokensFromMap(allTokens);
+  const userAddedTokensV3 = useUserAddedTokensV3();
 
-  return useTokensFromMap(allTokens, true);
+  return useMemo(() => {
+    return userAddedTokensV3.reduce<{ [address: string]: Token }>(
+      (tokenMap, token) => {
+        tokenMap[token.address] = token;
+        return tokenMap;
+      },
+      { ...tokensFromMap },
+    );
+  }, [tokensFromMap, userAddedTokensV3]);
 }
 
 export function useIsTokenActive(token: Token | undefined | null): boolean {
@@ -148,11 +160,50 @@ export function useToken(tokenAddress?: string): Token | undefined | null {
   );
 
   return useMemo(() => {
-    if (token) return token;
+    console.log('🔍 useToken hook - checking token:', {
+      tokenAddress: tokenAddress,
+      address,
+      tokenFound: !!token,
+      chainId,
+      decimalsLoading: decimals.loading,
+      symbolLoading: symbol.loading,
+      tokenNameLoading: tokenName.loading,
+      decimalsError: decimals.error,
+      symbolError: symbol.error,
+      tokenNameError: tokenName.error,
+      decimalsResult: decimals.result,
+      symbolResult: symbol.result,
+    });
+    if (token) {
+      console.log('✅ Token found in tokens map:', token.symbol);
+      return token;
+    }
     if (!chainId || !address) return null;
+
+    // If all calls have errored and we have no results, return undefined instead of waiting forever
+    // This prevents the app from being stuck in loading state when multicall fails
+    if (
+      decimals.error &&
+      symbol.error &&
+      tokenName.error &&
+      !decimals.result &&
+      !symbol.result &&
+      !tokenName.result &&
+      !decimals.loading &&
+      !symbol.loading &&
+      !tokenName.loading
+    ) {
+      console.log("❌ All token metadata calls failed, can't fetch token data");
+      return undefined;
+    }
+
+    // Continue loading if any call is still in progress
     if (decimals.loading || symbol.loading || tokenName.loading) return null;
+
+    // If we have decimals result, we can create a token even if name/symbol failed
+    // This prevents the app from being completely blocked by multicall failures
     if (decimals.result) {
-      return new Token(
+      const newToken = new Token(
         chainId,
         address,
         decimals.result[0],
@@ -167,7 +218,10 @@ export function useToken(tokenAddress?: string): Token | undefined | null {
           'Unknown Token',
         ),
       );
+      console.log('✅ Token created from on-chain data:', newToken.symbol);
+      return newToken;
     }
+    console.log("❌ Token not found and can't fetch on-chain");
     return undefined;
   }, [
     address,
@@ -203,7 +257,7 @@ export function useCurrency(
   const token = useToken(isETH ? undefined : currencyId);
   const extendedEther = useMemo(
     () =>
-      chainId
+      chainId && chainInfo
         ? ExtendedEther.onChain(
             chainId,
             chainInfo.nativeCurrencyDecimals,
@@ -213,9 +267,9 @@ export function useCurrency(
         : undefined,
     [
       chainId,
-      chainInfo.nativeCurrencyDecimals,
-      chainInfo.nativeCurrencyName,
-      chainInfo.nativeCurrencySymbol,
+      chainInfo?.nativeCurrencyDecimals,
+      chainInfo?.nativeCurrencyName,
+      chainInfo?.nativeCurrencySymbol,
     ],
   );
   const weth = chainId ? WMATIC_EXTENDED[chainId] : undefined;

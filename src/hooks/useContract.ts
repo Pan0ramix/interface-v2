@@ -30,12 +30,14 @@ import QUICKConversionABI from 'constants/abis/quick-conversion.json';
 import {
   GAMMA_MASTERCHEF_ADDRESSES,
   MULTICALL_ADDRESS,
+  MULTICALL3_ADDRESS,
   NONFUNGIBLE_POSITION_MANAGER_ADDRESSES,
   NONFUNGIBLE_POSITION_V4_MANAGER_ADDRESSES,
   QUOTER_ADDRESSES,
   QUOTER_V4_ADDRESSES,
   V3_MIGRATOR_ADDRESSES,
   MULTICALL_NETWORKS,
+  MULTICALL_NETWORKS_EXTENDED,
   V2_ROUTER_ADDRESS,
   LAIR_ADDRESS,
   QUICK_ADDRESS,
@@ -47,6 +49,7 @@ import {
   UNIV3_QUOTER_ADDRESSES,
   STEER_PERIPHERY,
   STEER_VAULT_REGISTRY,
+  WMATIC_EXTENDED,
   PRICE_GETTER_ADDRESS,
   MERKL_DISTRIBUTOR,
   NATIVE_CONVERTER,
@@ -55,6 +58,7 @@ import NewQuoterABI from 'constants/abis/v3/quoter.json';
 import QuoterV4ABI from 'constants/abis/v4/quoter.json';
 import UniV3QuoterABI from 'constants/abis/uni-v3/quoter.json';
 import MULTICALL2_ABI from 'constants/abis/v3/multicall.json';
+import MULTICALL3_ABI from 'constants/abis/v3/multicall3.json';
 import NFTPosMan from 'constants/abis/v3/nft-pos-man.json';
 import NFTPosManV4 from 'constants/abis/v4/nft-pos-man.json';
 import GammaUniProxy1 from 'constants/abis/gamma-uniproxy1.json';
@@ -225,11 +229,13 @@ export function useWETHContract(
   withSignerIfPossible?: boolean,
 ): Contract | null {
   const { chainId } = useActiveWeb3React();
-  return useContract(
-    chainId ? WETH[chainId].address : undefined,
-    WETH_ABI,
-    withSignerIfPossible,
-  );
+  const wethAddress =
+    chainId && WETH[chainId]
+      ? WETH[chainId].address
+      : chainId && WMATIC_EXTENDED[chainId]
+      ? WMATIC_EXTENDED[chainId].address
+      : undefined;
+  return useContract(wethAddress, WETH_ABI, withSignerIfPossible);
 }
 
 export function useNativeConverterContract(
@@ -296,15 +302,25 @@ export function useEIP2612Contract(tokenAddress?: string): Contract | null {
 
 export function useMulticallContract(): Contract | null {
   const { chainId } = useActiveWeb3React();
-  return useContract(
-    chainId && MULTICALL_NETWORKS[chainId],
-    MULTICALL_ABI,
-    false,
-  );
+  const multicallAddress = chainId
+    ? MULTICALL_NETWORKS[chainId] || MULTICALL_NETWORKS_EXTENDED[chainId]
+    : undefined;
+  return useContract(multicallAddress, MULTICALL_ABI, false);
 }
 
 export function useMulticall2Contract() {
-  return useContract(MULTICALL_ADDRESS, MULTICALL2_ABI, false);
+  const { chainId } = useActiveWeb3React();
+  const multicallAddress = chainId ? MULTICALL_ADDRESS[chainId] : undefined;
+  return useContract(multicallAddress, MULTICALL2_ABI, false);
+}
+
+export function useMulticall3Contract() {
+  const { chainId } = useActiveWeb3React();
+  const multicallAddress =
+    chainId && MULTICALL3_ADDRESS[chainId]
+      ? MULTICALL3_ADDRESS[chainId]
+      : undefined;
+  return useContract(multicallAddress, MULTICALL3_ABI, false);
 }
 
 export function useStakingContract(

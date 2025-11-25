@@ -100,6 +100,14 @@ export const MULTICALL_NETWORKS: { [chainId in ChainId]?: string } = {
   [ChainId.SOMNIA]: '0x676A5ad5960d08bCD3ec83f8C086b76f33Aa921b',
 };
 
+// Additional multicall addresses for chains not in ChainId enum
+// Note: Base Sepolia (84532) uses Multicall3 instead - see MULTICALL3_ADDRESS mapping below
+export const MULTICALL_NETWORKS_EXTENDED: {
+  [chainId: number]: string | undefined;
+} = {
+  ...MULTICALL_NETWORKS,
+};
+
 export const defaultBondDexFactories: {
   [chainId in ChainId]?: { [index: number]: string };
 } = {
@@ -194,6 +202,7 @@ export const SWAP_ROUTER_ADDRESSES: AddressMap = {
   [ChainId.ZKTESTNET]: '0x481FcFa00Ee6b2384FF0B3c3b5b29aD911c1AAA7',
   [ChainId.ZKEVM]: '0xF6Ad3CcF71Abb3E12beCf6b3D2a74C963859ADCd',
   [ChainId.LAYERX]: '0x4B9f4d2435Ef65559567e5DbFC1BbB37abC43B57',
+  84532: '0x324a502402AcDf6ba598d0407C313Bb6525CA130', // Base Sepolia
 };
 
 //Swap Router for algebra-integral
@@ -213,6 +222,7 @@ export const NONFUNGIBLE_POSITION_MANAGER_ADDRESSES: AddressMap = {
   [ChainId.ZKTESTNET]: '0xE86Ba90bf805cEa452c8FA6E37b4ae2D17D32599',
   [ChainId.ZKEVM]: '0xd8E1E7009802c914b0d39B31Fc1759A865b727B1',
   [ChainId.LAYERX]: '0xF6Ad3CcF71Abb3E12beCf6b3D2a74C963859ADCd',
+  84532: '0x215616e56B1c1cBfD73e3FD6A8912a80c3Bb46F3', // Base Sepolia
 };
 
 //algebra-integral
@@ -231,6 +241,7 @@ export const UNI_V3_FACTORY_ADDRESS: AddressMap = {
   [ChainId.IMX]: '0x56c2162254b0E4417288786eE402c2B41d4e181e',
   [ChainId.ASTARZKEVM]: '0x56c2162254b0E4417288786eE402c2B41d4e181e',
   [ChainId.MINATO]: '0x56c2162254b0E4417288786eE402c2B41d4e181e',
+  84532: '0xF4d8ce44AF905f97cA3C926CdDff9A18273Ef553', // Base Sepolia
 };
 
 export const UNI_NFT_POSITION_MANAGER_ADDRESS: AddressMap = {
@@ -242,6 +253,7 @@ export const UNI_NFT_POSITION_MANAGER_ADDRESS: AddressMap = {
   [ChainId.IMX]: '0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff',
   [ChainId.ASTARZKEVM]: '0xF6Ad3CcF71Abb3E12beCf6b3D2a74C963859ADCd',
   [ChainId.MINATO]: '0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff',
+  84532: '0x215616e56B1c1cBfD73e3FD6A8912a80c3Bb46F3', // Base Sepolia
 };
 
 export const UNI_SWAP_ROUTER: AddressMap = {
@@ -285,6 +297,14 @@ export const MULTICALL_ADDRESS: AddressMap = {
   [ChainId.MINATO]: '0xc7efb32470dEE601959B15f1f923e017C6A918cA',
   [ChainId.SONEIUM]: '0x2E4C17aEE528084e6dB16882d24fc1Dd0Ef20D97',
   [ChainId.SOMNIA]: '0x1B3B62B519a60E8927d4FfbB54681871e1Bb6F11',
+  // Note: Base Sepolia (84532) uses Multicall3 instead of AlgebraInterfaceMulticall
+  // See MULTICALL3_ADDRESS mapping below
+};
+
+// Multicall3 addresses for chains that don't support AlgebraInterfaceMulticall
+// Multicall3 is backward compatible with Multicall2 and uses tryBlockAndAggregate
+export const MULTICALL3_ADDRESS: { [chainId: number]: string } = {
+  84532: '0xcA11bde05977b3631167028862bE2a173976CA11', // Base Sepolia - Standard Multicall3 (widely deployed via CREATE2)
 };
 
 export const V3_MIGRATOR_ADDRESSES: AddressMap = {
@@ -509,6 +529,13 @@ export const WMATIC_EXTENDED: { [chainId: number]: TokenV3 } = {
   [ChainId.MINATO]: toV3Token(WETH[ChainId.MINATO]),
   [ChainId.SONEIUM]: toV3Token(WETH[ChainId.SONEIUM]),
   [ChainId.SOMNIA]: toV3Token(WETH[ChainId.SOMNIA]),
+  84532: new TokenV3(
+    84532,
+    '0xEa347A7CB535cBE125099A4C3B992149aE08e55d',
+    18,
+    'WETH',
+    'Wrapped Ether',
+  ), // Base Sepolia
 };
 
 export const USDC: { [chainId: number]: Token } = {

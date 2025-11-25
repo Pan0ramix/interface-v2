@@ -43,6 +43,7 @@ const CurrencySearchModal: React.FC<CurrencySearchModalProps> = ({
 
   const handleCurrencySelect = useCallback(
     (currency: Currency) => {
+      console.log('🔍 handleCurrencySelect called with:', currency);
       if (!isV2) {
         if ((currency as CurrencyV3).isNative) {
           onCurrencySelect({
@@ -51,7 +52,99 @@ const CurrencySearchModal: React.FC<CurrencySearchModalProps> = ({
             isToken: false,
           } as NativeCurrency);
         } else {
-          onCurrencySelect(new WrappedTokenInfo(currency as TokenInfo));
+          const currencyAny = currency as any;
+
+          // Check if currency is already a WrappedTokenInfo (has tokenInfo property)
+          if (
+            currency &&
+            'tokenInfo' in currency &&
+            currency.tokenInfo &&
+            currency instanceof WrappedTokenInfo
+          ) {
+            // Already a WrappedTokenInfo, use it directly
+            console.log('✅ Using WrappedTokenInfo directly');
+            onCurrencySelect(currency);
+          } else if (
+            currency &&
+            'chainId' in currency &&
+            'decimals' in currency &&
+            'symbol' in currency &&
+            'name' in currency
+          ) {
+            // For Token instances (manually added tokens), create a TokenInfo-like object
+            // Try multiple ways to get the address
+            const tokenAddress =
+              currencyAny.address ||
+              currencyAny.wrapped?.address ||
+              (currencyAny.tokenInfo?.address
+                ? currencyAny.tokenInfo.address
+                : undefined);
+
+            console.log('🔍 Token address extraction:', {
+              direct: currencyAny.address,
+              wrapped: currencyAny.wrapped?.address,
+              tokenInfo: currencyAny.tokenInfo?.address,
+              final: tokenAddress,
+            });
+
+            if (!tokenAddress) {
+              console.error('❌ Token address not found for currency:', {
+                currency,
+                keys: Object.keys(currencyAny),
+                chainId: currency.chainId,
+                symbol: currency.symbol,
+                name: currency.name,
+              });
+              // Try to get address using getter methods
+              const addressViaGetter =
+                typeof currencyAny.address === 'function'
+                  ? currencyAny.address()
+                  : undefined;
+
+              if (addressViaGetter) {
+                console.log('✅ Found address via getter:', addressViaGetter);
+                const tokenInfo: TokenInfo = {
+                  chainId: currency.chainId as number,
+                  address: addressViaGetter,
+                  decimals: currency.decimals as number,
+                  symbol: (currency.symbol as string) || '',
+                  name: (currency.name as string) || '',
+                };
+                onCurrencySelect(new WrappedTokenInfo(tokenInfo));
+                onDismiss();
+                return;
+              }
+
+              // Last resort: try using the currency as-is, maybe it's already wrapped
+              console.warn('⚠️ Falling back to using currency as-is');
+              onCurrencySelect(currency);
+              onDismiss();
+              return;
+            }
+
+            const tokenInfo: TokenInfo = {
+              chainId: currency.chainId as number,
+              address: tokenAddress,
+              decimals: currency.decimals as number,
+              symbol: (currency.symbol as string) || '',
+              name: (currency.name as string) || '',
+            };
+            console.log(
+              '✅ Creating WrappedTokenInfo from TokenInfo:',
+              tokenInfo,
+            );
+            const wrappedToken = new WrappedTokenInfo(tokenInfo);
+            console.log('📤 Calling onCurrencySelect with:', {
+              wrappedToken,
+              address: wrappedToken.address,
+              symbol: wrappedToken.symbol,
+            });
+            onCurrencySelect(wrappedToken);
+          } else {
+            // For TokenInfo instances (from token lists), wrap directly
+            console.log('✅ Wrapping TokenInfo directly');
+            onCurrencySelect(new WrappedTokenInfo(currency as TokenInfo));
+          }
         }
       } else {
         onCurrencySelect(currency);

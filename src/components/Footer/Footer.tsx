@@ -75,13 +75,22 @@ const Footer: React.FC = () => {
       <Box className='footerContainer'>
         <Grid container spacing={4} className='socialMenuWrapper'>
           <Grid item container xs={12} sm={12} md={8} spacing={4}>
-            {socialMenuItems.map((item) => (
-              <Grid key={item.title} item xs={6} sm={6} md={3}>
+            {socialMenuItems.map((item, index) => (
+              <Grid
+                key={item.title || `footer-item-${index}`}
+                item
+                xs={6}
+                sm={6}
+                md={3}
+              >
                 <small style={{ height: '17px' }}>{item.title} &emsp;</small>
                 <Box mt={3}>
-                  {item.items.map((socialItem: any) => (
+                  {item.items.map((socialItem: any, itemIndex: number) => (
                     <Box
-                      key={socialItem.title}
+                      key={
+                        socialItem.title ||
+                        `footer-subitem-${index}-${itemIndex}`
+                      }
                       className='cursor-pointer'
                       my={1.5}
                       style={{

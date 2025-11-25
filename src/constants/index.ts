@@ -103,7 +103,7 @@ export const subgraphNotReadyChains = [
   ChainId.DOGECHAIN,
 ];
 
-export const CHAIN_IDS_TO_NAMES = {
+export const CHAIN_IDS_TO_NAMES: { [chainId: number]: string } = {
   [ChainId.MATIC]: 'matic',
   [ChainId.MUMBAI]: 'mumbai',
   [ChainId.DOGECHAIN]: 'dogechain',
@@ -123,6 +123,7 @@ export const CHAIN_IDS_TO_NAMES = {
   [ChainId.MINATO]: 'minato',
   [ChainId.SONEIUM]: 'soneium',
   [ChainId.SOMNIA]: 'somnia_testnet',
+  84532: 'base_sepolia', // Base Sepolia
 };
 
 export enum ZapType {
@@ -176,7 +177,7 @@ export const BONUS_CUTOFF_AMOUNT: { [chainId in ChainId]?: number } = {
 };
 
 export const MIN_NATIVE_CURRENCY_FOR_GAS: {
-  [chainId in ChainId]: JSBI;
+  [chainId: number]: JSBI | undefined;
 } = {
   [ChainId.ETHEREUM]: JSBI.exponentiate(JSBI.BigInt(10), JSBI.BigInt(16)), // .01 ETH
   [ChainId.MATIC]: JSBI.exponentiate(JSBI.BigInt(10), JSBI.BigInt(16)), // .01 ETH
@@ -206,6 +207,7 @@ export const MIN_NATIVE_CURRENCY_FOR_GAS: {
   [ChainId.MINATO]: JSBI.exponentiate(JSBI.BigInt(10), JSBI.BigInt(14)),
   [ChainId.SONEIUM]: JSBI.exponentiate(JSBI.BigInt(10), JSBI.BigInt(14)),
   [ChainId.SOMNIA]: JSBI.exponentiate(JSBI.BigInt(10), JSBI.BigInt(14)),
+  84532: JSBI.exponentiate(JSBI.BigInt(10), JSBI.BigInt(16)), // Base Sepolia - .01 ETH
 };
 
 export const GlobalConst = {
@@ -372,6 +374,7 @@ export const SUPPORTED_CHAINIDS = [
   ChainId.MINATO,
   ChainId.SONEIUM,
   ChainId.SOMNIA,
+  84532, // Base Sepolia
 ];
 
 export interface GammaPair {

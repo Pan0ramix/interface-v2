@@ -47,13 +47,17 @@ import {
   useSwapActionHandlers,
   useSwapState,
 } from 'state/swap/v3/hooks';
-import { useExpertModeManager, useAmlScore } from 'state/user/hooks';
+import {
+  useExpertModeManager,
+  useAmlScore,
+  useAddUserToken,
+} from 'state/user/hooks';
 import { getTradeVersion } from 'utils/v3/getTradeVersion';
 import { halfAmountSpend, maxAmountSpend } from 'utils/v3/maxAmountSpend';
 import { warningSeverity } from 'utils/v3/prices';
 
 import { Box, Button } from '@material-ui/core';
-import { ChainId, ETHER, WETH } from '@uniswap/sdk';
+import { ChainId, ETHER, Token as TokenV2, WETH } from '@uniswap/sdk';
 import { AddressInput, CustomTooltip } from 'components';
 import {
   NATIVE_CONVERTER,
@@ -524,33 +528,88 @@ const SwapV3Page: React.FC = () => {
   const parsedQs = useParsedQueryString();
   const { redirectWithCurrency, redirectWithSwitch } = useSwapRedirects();
 
+  const addUserToken = useAddUserToken();
+
   const handleInputSelect = useCallback(
     (inputCurrency: any) => {
       setApprovalSubmitted(false); // reset 2 step UI for approvals
       setNativeApprovalSubmitted(false);
+      const inputCurrencyAny = inputCurrency as any;
+      const outputCurrencyAny = currencies[Field.OUTPUT] as any;
+      const inputAddress =
+        inputCurrencyAny?.address ||
+        inputCurrencyAny?.wrapped?.address ||
+        (inputCurrencyAny?.tokenInfo?.address
+          ? inputCurrencyAny.tokenInfo.address
+          : undefined);
+      const outputAddress =
+        outputCurrencyAny?.address ||
+        outputCurrencyAny?.wrapped?.address ||
+        (outputCurrencyAny?.tokenInfo?.address
+          ? outputCurrencyAny.tokenInfo.address
+          : undefined);
+
+      // If the currency is a token (not native) and not in default tokens,
+      // automatically add it to user's token list so it persists
+      if (
+        inputCurrency &&
+        !inputCurrency.isNative &&
+        inputCurrency instanceof Token &&
+        inputAddress &&
+        !Boolean(inputAddress in defaultTokens) &&
+        chainId
+      ) {
+        console.log('💾 Auto-adding token to user list:', {
+          address: inputAddress,
+          symbol: inputCurrency.symbol,
+          chainId,
+        });
+        try {
+          // Convert to v2 Token format for userAddedTokens (it uses @uniswap/sdk Token)
+          const v2Token = new TokenV2(
+            chainId,
+            inputCurrency.address,
+            inputCurrency.decimals,
+            inputCurrency.symbol,
+            inputCurrency.name,
+          );
+          addUserToken(v2Token);
+        } catch (error) {
+          console.error('Failed to add token to user list:', error);
+        }
+        setDismissTokenWarning(false);
+      }
+
       if (
         (inputCurrency &&
           inputCurrency.isNative &&
           currencies[Field.OUTPUT] &&
           currencies[Field.OUTPUT]?.isNative) ||
-        (inputCurrency &&
-          inputCurrency.address &&
-          currencies[Field.OUTPUT] &&
-          !currencies[Field.OUTPUT]?.isNative &&
-          currencies[Field.OUTPUT]?.wrapped &&
-          currencies[Field.OUTPUT]?.wrapped.address &&
-          inputCurrency.address.toLowerCase() ===
-            currencies[Field.OUTPUT]?.wrapped.address.toLowerCase())
+        (inputAddress &&
+          outputAddress &&
+          inputAddress.toLowerCase() === outputAddress.toLowerCase())
       ) {
         redirectWithSwitch();
       } else {
-        if (!Boolean(inputCurrency.address in defaultTokens)) {
+        if (inputAddress && !Boolean(inputAddress in defaultTokens)) {
           setDismissTokenWarning(false);
         }
+        console.log('🔄 Calling redirectWithCurrency for input:', {
+          inputCurrency,
+          inputAddress,
+          symbol: inputCurrency?.symbol,
+        });
         redirectWithCurrency(inputCurrency, true, false);
       }
     },
-    [redirectWithCurrency, currencies, redirectWithSwitch, defaultTokens],
+    [
+      redirectWithCurrency,
+      currencies,
+      redirectWithSwitch,
+      defaultTokens,
+      chainId,
+      addUserToken,
+    ],
   );
 
   const chainInfo = CHAIN_INFO[chainIdToUse];
@@ -583,23 +642,32 @@ const SwapV3Page: React.FC = () => {
 
   const handleOutputSelect = useCallback(
     (outputCurrency: any) => {
+      const outputCurrencyAny = outputCurrency as any;
+      const inputCurrencyAny = currencies[Field.INPUT] as any;
+      const outputAddress =
+        outputCurrencyAny?.address ||
+        outputCurrencyAny?.wrapped?.address ||
+        (outputCurrencyAny?.tokenInfo?.address
+          ? outputCurrencyAny.tokenInfo.address
+          : undefined);
+      const inputAddress =
+        inputCurrencyAny?.address ||
+        inputCurrencyAny?.wrapped?.address ||
+        (inputCurrencyAny?.tokenInfo?.address
+          ? inputCurrencyAny.tokenInfo.address
+          : undefined);
       if (
         (outputCurrency &&
           outputCurrency.isNative &&
           currencies[Field.INPUT] &&
           currencies[Field.INPUT]?.isNative) ||
-        (outputCurrency &&
-          outputCurrency.address &&
-          currencies[Field.INPUT] &&
-          !currencies[Field.INPUT].isNative &&
-          currencies[Field.INPUT]?.wrapped &&
-          currencies[Field.INPUT]?.wrapped.address &&
-          outputCurrency.address.toLowerCase() ===
-            currencies[Field.INPUT]?.wrapped.address.toLowerCase())
+        (outputAddress &&
+          inputAddress &&
+          outputAddress.toLowerCase() === inputAddress.toLowerCase())
       ) {
         redirectWithSwitch();
       } else {
-        if (!Boolean(outputCurrency.address in defaultTokens)) {
+        if (outputAddress && !Boolean(outputAddress in defaultTokens)) {
           setDismissTokenWarning(false);
         }
         redirectWithCurrency(outputCurrency, false, false);

@@ -15,6 +15,8 @@ import {
   getSingleContractMultipleDataImmediately,
   getMultipleContractSingleDataImmediately,
 } from 'state/multicall/v3/hooks';
+import { ExtendedEther } from 'constants/v3/addresses';
+import { CHAIN_INFO } from 'constants/v3/chains';
 
 import { Contract } from '@ethersproject/contracts';
 import { ChainId } from '@uniswap/sdk';
@@ -46,21 +48,32 @@ export function useETHBalances(
     addresses.map((address) => [address]),
   );
 
+  const chainInfo = chainId ? CHAIN_INFO[chainId] : undefined;
+
   const balances = useMemo(
     () =>
       addresses.reduce<{ [address: string]: CurrencyAmount<Currency> }>(
         (memo, address, i) => {
           const value = results?.[i]?.result?.[0];
-          if (value && chainId)
+          if (value && chainId) {
+            const nativeCurrency = chainInfo
+              ? ExtendedEther.onChain(
+                  chainId,
+                  chainInfo.nativeCurrencyDecimals,
+                  chainInfo.nativeCurrencySymbol,
+                  chainInfo.nativeCurrencyName,
+                )
+              : Ether.onChain(chainId);
             memo[address] = CurrencyAmount.fromRawAmount(
-              Ether.onChain(chainId),
+              nativeCurrency,
               JSBI.BigInt(value.toString()),
             );
+          }
           return memo;
         },
         {},
       ),
-    [addresses, chainId, results],
+    [addresses, chainId, results, chainInfo],
   );
 
   const prevBalances = usePreviousNonEmptyObject(balances);
@@ -134,9 +147,10 @@ export function useTokenBalancesWithLoadingIndicator(
   return useMemo(() => {
     if (!prevBalances) return [_balances, anyLoading];
 
+    // If current balances are empty but we had previous balances, keep using previous
     if (
       Object.keys(_balances).length === 0 &&
-      Object.keys(_balances).length !== 0
+      Object.keys(prevBalances).length !== 0
     )
       return [prevBalances, anyLoading];
 
@@ -236,12 +250,22 @@ export async function getETHBalancesImmediately(
     blockNumber,
   );
 
+  const chainInfo = CHAIN_INFO[chainId];
+
   const ret = addresses.reduce<{ [address: string]: CurrencyAmount<Currency> }>(
     (memo, address, i) => {
       const value = results?.[i]?.result?.[0];
       if (value && chainId) {
+        const nativeCurrency = chainInfo
+          ? ExtendedEther.onChain(
+              chainId,
+              chainInfo.nativeCurrencyDecimals,
+              chainInfo.nativeCurrencySymbol,
+              chainInfo.nativeCurrencyName,
+            )
+          : Ether.onChain(chainId);
         memo[address] = CurrencyAmount.fromRawAmount(
-          Ether.onChain(chainId),
+          nativeCurrency,
           JSBI.BigInt(value.toString()),
         );
       }

@@ -114,14 +114,30 @@ function useCallsData(
       calls.map<CallResult>((call) => {
         if (!chainId || !call) return INVALID_RESULT;
 
-        const result = callResults[chainId]?.[toCallKey(call)];
+        const callKey = toCallKey(call);
+        const result = callResults[chainId]?.[callKey];
         let data;
+
+        // Minimal debug logging - only log when data structure looks wrong
+        if (
+          process.env.NODE_ENV === 'development' &&
+          chainId !== undefined &&
+          Number(chainId) === 84532 &&
+          result &&
+          !result?.data
+        ) {
+          // Only log if result exists but data is missing
+          console.warn('CallResult missing data field', {
+            callKey: callKey.substring(0, 80) + '...',
+            resultKeys: Object.keys(result || {}),
+            fullResult: result,
+          });
+        }
 
         if (result?.data && result?.data !== '0x') {
           data = result.data;
-        } else {
-          // console.error(result, result?.data, call)
         }
+        // Removed verbose logging - only log critical issues above
 
         return { valid: true, data, blockNumber: result?.blockNumber };
       }),
