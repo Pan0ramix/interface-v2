@@ -35,6 +35,7 @@ import useToggledVersion, { Version } from 'hooks/v3/useToggledVersion';
 import { useUSDCValue } from 'hooks/v3/useUSDCPrice';
 import JSBI from 'jsbi';
 import { Trade as V3Trade } from 'lib/src/trade';
+import { useQueryClient } from '@tanstack/react-query';
 import { WrappedCurrency } from 'models/types';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowDown, CheckCircle, HelpCircle, Info } from 'react-feather';
@@ -62,7 +63,9 @@ import { AddressInput, CustomTooltip } from 'components';
 import {
   NATIVE_CONVERTER,
   SWAP_ROUTER_ADDRESSES,
+  SWAP_ROUTER_V4_ADDRESSES,
   UNI_SWAP_ROUTER,
+  USDC,
   WMATIC_EXTENDED,
 } from 'constants/v3/addresses';
 import useParsedQueryString from 'hooks/useParsedQueryString';
@@ -84,6 +87,7 @@ const SwapV3Page: React.FC = () => {
   const { account, chainId } = useActiveWeb3React();
   const chainIdToUse = chainId ?? ChainId.MATIC;
   const history = useHistory();
+  const queryClient = useQueryClient();
 
   const [dismissTokenWarning, setDismissTokenWarning] = useState<boolean>(
     false,
@@ -174,8 +178,20 @@ const SwapV3Page: React.FC = () => {
     ],
   );
 
-  const fiatValueInput = useUSDCValue(parsedAmounts[Field.INPUT]);
-  const fiatValueOutput = useUSDCValue(parsedAmounts[Field.OUTPUT]);
+  // Use the actual swap amounts for price calculation
+  // This works for ANY token pair - no special USDC handling needed!
+  // Uses the actual swap amount, making price calculation more accurate
+  // and ensuring it fails if liquidity is insufficient for the user's intended swap
+  const fiatValueInput = useUSDCValue(
+    parsedAmounts[Field.INPUT],
+    false,
+    parsedAmounts[Field.INPUT] || undefined, // Use actual input amount
+  );
+  const fiatValueOutput = useUSDCValue(
+    parsedAmounts[Field.OUTPUT],
+    false,
+    parsedAmounts[Field.OUTPUT] || undefined, // Use actual output amount
+  );
 
   const {
     onCurrencySelection,
@@ -450,6 +466,54 @@ const SwapV3Page: React.FC = () => {
             summary,
           });
           dispatch(updateUserBalance());
+
+          // Invalidate allowance queries after successful swap
+          // This ensures the approval state is recalculated with the new (reduced) allowance
+          if (currencies[Field.INPUT]?.isToken && account) {
+            const inputTokenAddress = currencies[Field.INPUT].address;
+            const isUni = trade?.swaps[0]?.route?.pools[0]?.isUni;
+            const isV4 = trade?.swaps[0]?.route?.pools[0]?.isV4;
+            const spender = chainId
+              ? isUni
+                ? UNI_SWAP_ROUTER[chainId]
+                : isV4
+                ? SWAP_ROUTER_V4_ADDRESSES[chainId]
+                : SWAP_ROUTER_ADDRESSES[chainId]
+              : undefined;
+
+            if (spender) {
+              console.log(
+                '🔄 [APPROVAL] Invalidating allowance query after swap',
+                {
+                  timestamp: new Date().toISOString(),
+                  token: currencies[Field.INPUT]?.symbol,
+                  tokenAddress: inputTokenAddress,
+                  spender,
+                  account,
+                },
+              );
+              // Invalidate and immediately refetch allowance queries for this token/spender combination
+              // This ensures the UI updates immediately after the swap, without waiting for lastTx to update
+              queryClient.invalidateQueries({
+                queryKey: [
+                  'token-allowance',
+                  inputTokenAddress,
+                  account,
+                  spender,
+                ],
+              });
+              // Also refetch immediately to get the updated allowance right away
+              queryClient.refetchQueries({
+                queryKey: [
+                  'token-allowance',
+                  inputTokenAddress,
+                  account,
+                  spender,
+                ],
+              });
+            }
+          }
+
           setSwapState({
             attemptingTxn: false,
             txPending: false,
@@ -534,6 +598,7 @@ const SwapV3Page: React.FC = () => {
     config,
     isUni,
     fromTokenUSDPrice,
+    queryClient,
   ]);
 
   // errors
@@ -566,29 +631,49 @@ const SwapV3Page: React.FC = () => {
         (approvalSubmitted && approvalState === ApprovalState.APPROVED)) &&
     !(priceImpactSeverity > 3 && !isExpertMode);
 
-  // Log approval state for debugging (throttled to prevent excessive logging)
-  const prevApprovalStateRef = React.useRef<ApprovalState | undefined>(
-    undefined,
-  );
+  // Log approval state and showApproveFlow calculation for debugging
   useEffect(() => {
-    // Only log when approval state actually changes
-    if (
-      prevApprovalStateRef.current !== approvalState &&
-      trade &&
-      currencies[Field.INPUT]?.isToken &&
-      approvalState !== ApprovalState.APPROVED
-    ) {
-      console.log('🔐 [APPROVAL] Approval state changed', {
+    if (trade && currencies[Field.INPUT]?.isToken) {
+      console.log('🔐 [APPROVAL] Approval state check', {
         timestamp: new Date().toISOString(),
         approvalState,
         showApproveFlow,
+        swapInputError,
+        showWrap,
+        priceImpactSeverity,
+        isExpertMode,
         token: currencies[Field.INPUT]?.symbol,
         hasTrade: !!trade,
         signatureState,
+        tradeInputAmount: trade.inputAmount.toExact(),
+        tradeInputCurrency: trade.inputAmount.currency.symbol,
+        conditions: {
+          noSwapInputError: !swapInputError,
+          noShowWrap: !showWrap,
+          isNotApproved: approvalState === ApprovalState.NOT_APPROVED,
+          isPending: approvalState === ApprovalState.PENDING,
+          isUnknownWithTrade:
+            approvalState === ApprovalState.UNKNOWN &&
+            trade &&
+            currencies[Field.INPUT]?.isToken,
+          isApprovedAfterSubmit:
+            approvalSubmitted && approvalState === ApprovalState.APPROVED,
+          priceImpactOk: !(priceImpactSeverity > 3 && !isExpertMode),
+        },
       });
-      prevApprovalStateRef.current = approvalState;
     }
-  }, [approvalState, showApproveFlow, trade, currencies, signatureState]);
+  }, [
+    approvalState,
+    showApproveFlow,
+    trade,
+    currencies,
+    signatureState,
+    swapInputError,
+    showWrap,
+    priceImpactSeverity,
+    isExpertMode,
+    approvalSubmitted,
+  ]);
 
   const handleConfirmDismiss = useCallback(() => {
     setSwapState({

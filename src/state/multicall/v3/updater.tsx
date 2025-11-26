@@ -206,11 +206,24 @@ async function fetchChunk(
                       ? 'quoteExactOutput (UniV3)'
                       : 'unknown';
 
-                  console.warn(
-                    isQuoteCall
-                      ? '❌ [QUOTER] Quote call failed on Base Sepolia'
-                      : 'Pool call failed on Base Sepolia',
-                    {
+                  // Quote call failures are expected when there's no route or insufficient liquidity
+                  // Log as debug to reduce noise, but keep the information available
+                  const logLevel = isQuoteCall ? 'debug' : 'warn';
+                  if (logLevel === 'debug') {
+                    console.debug(
+                      '⚠️ [QUOTER] Quote call failed (expected if no route/liquidity)',
+                      {
+                        index: idx,
+                        target: localChunk[idx]?.address,
+                        selector: selector,
+                        methodName,
+                        errorMessage,
+                        note:
+                          'This is normal when there is no route or insufficient liquidity',
+                      },
+                    );
+                  } else {
+                    console.warn('Pool call failed on Base Sepolia', {
                       index: idx,
                       target: localChunk[idx]?.address,
                       selector: selector,
@@ -219,8 +232,8 @@ async function fetchChunk(
                       returnData: r.returnData || '0x',
                       callDataLength: localChunk[idx]?.callData?.length,
                       callDataPreview: localChunk[idx]?.callData?.slice(0, 100),
-                    },
-                  );
+                    });
+                  }
                 }
               }
 

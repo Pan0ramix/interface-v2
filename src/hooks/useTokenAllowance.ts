@@ -12,16 +12,65 @@ function useTokenAllowanceData(
   spender?: string,
 ) {
   const contract = useTokenContract(tokenAddress, false);
-  const lastTx = useLastTransactionHash();
 
-  return useQuery({
-    queryKey: ['token-allowance', tokenAddress, owner, spender, lastTx],
-    queryFn: async () => {
+  return useQuery(
+    ['token-allowance', tokenAddress, owner, spender],
+    async () => {
       if (!contract || !spender || !owner) return null;
-      const res = await contract.allowance(owner, spender);
-      return res;
+
+      const startTime = performance.now();
+      console.log('🔐 [ALLOWANCE] Fetching allowance', {
+        timestamp: new Date().toISOString(),
+        tokenAddress,
+        owner,
+        spender,
+      });
+
+      try {
+        // Add timeout to prevent hanging
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error('Allowance fetch timed out after 10s')),
+            10000,
+          ),
+        );
+
+        const allowancePromise = contract.allowance(owner, spender);
+
+        const res = await Promise.race([allowancePromise, timeoutPromise]);
+        const duration = performance.now() - startTime;
+
+        console.log('✅ [ALLOWANCE] Allowance fetched', {
+          timestamp: new Date().toISOString(),
+          tokenAddress,
+          owner,
+          spender,
+          allowance: res.toString(),
+          duration: `${duration.toFixed(2)}ms`,
+        });
+
+        return res;
+      } catch (error) {
+        const duration = performance.now() - startTime;
+        console.error('❌ [ALLOWANCE] Failed to fetch allowance', {
+          timestamp: new Date().toISOString(),
+          tokenAddress,
+          owner,
+          spender,
+          error: error?.message || error,
+          duration: `${duration.toFixed(2)}ms`,
+        });
+        throw error;
+      }
     },
-  });
+    {
+      enabled: !!(contract && spender && owner), // Only run if we have all required params
+      staleTime: 5000, // Consider data fresh for 5 seconds (allows caching)
+      cacheTime: 30000, // Keep in cache for 30 seconds (v4 uses cacheTime, not gcTime)
+      retry: 1, // Retry only once on failure (faster)
+      retryDelay: 500, // Wait 500ms between retries (faster)
+    },
+  );
 }
 
 export function useTokenAllowance(

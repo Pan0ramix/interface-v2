@@ -7,7 +7,8 @@ import {
   TradeType,
 } from '@uniswap/sdk-core';
 import { Trade as V3Trade } from 'lib/src/trade';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState, useEffect } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   SWAP_ROUTER_ADDRESSES,
   SWAP_ROUTER_V4_ADDRESSES,
@@ -41,6 +42,7 @@ export function useApproveCallback(
 ): [ApprovalState, () => Promise<void>] {
   const [isApproved, setApproved] = useState(false);
   const { account, chainId } = useActiveWeb3React();
+  const queryClient = useQueryClient();
   const token = amountToApprove?.currency?.isToken
     ? amountToApprove.currency
     : undefined;
@@ -51,22 +53,95 @@ export function useApproveCallback(
   );
   const pendingApproval = useHasPendingApproval(token?.address, spender);
 
+  // Reset isApproved flag when allowance changes and becomes insufficient
+  // This ensures that after a swap (which reduces allowance), the approval state is recalculated
+  useEffect(() => {
+    if (
+      isApproved &&
+      currentAllowance &&
+      amountToApprove &&
+      currentAllowance.lessThan(amountToApprove)
+    ) {
+      console.log(
+        '🔄 [APPROVAL] Resetting isApproved flag - allowance insufficient',
+        {
+          timestamp: new Date().toISOString(),
+          token: token?.symbol,
+          currentAllowance: currentAllowance.toExact(),
+          amountToApprove: amountToApprove.toExact(),
+        },
+      );
+      setApproved(false);
+    }
+  }, [isApproved, currentAllowance, amountToApprove, token?.symbol]);
+
   // check the current approval status
   const approvalState: ApprovalState = useMemo(() => {
-    if (!amountToApprove || !spender) return ApprovalState.UNKNOWN;
-    if (amountToApprove.currency.isNative) return ApprovalState.APPROVED;
+    if (!amountToApprove || !spender) {
+      console.debug(
+        '🔐 [APPROVAL] UNKNOWN: missing amountToApprove or spender',
+        {
+          timestamp: new Date().toISOString(),
+          hasAmountToApprove: !!amountToApprove,
+          hasSpender: !!spender,
+          token: token?.symbol,
+        },
+      );
+      return ApprovalState.UNKNOWN;
+    }
+    if (amountToApprove.currency.isNative) {
+      console.debug('🔐 [APPROVAL] APPROVED: currency is native', {
+        timestamp: new Date().toISOString(),
+        token: token?.symbol,
+      });
+      return ApprovalState.APPROVED;
+    }
     // we might not have enough data to know whether or not we need to approve
-    if (!currentAllowance) return ApprovalState.UNKNOWN;
+    if (!currentAllowance) {
+      console.debug('🔐 [APPROVAL] UNKNOWN: no currentAllowance', {
+        timestamp: new Date().toISOString(),
+        token: token?.symbol,
+        spender,
+        amountToApprove: amountToApprove.toExact(),
+      });
+      // If we have isApproved flag but no allowance data, trust the flag temporarily
+      // This handles the case where allowance query is still loading after approval
+      if (isApproved) {
+        return ApprovalState.APPROVED;
+      }
+      return ApprovalState.UNKNOWN;
+    }
 
-    if (isApproved) return ApprovalState.APPROVED;
-
-    // amountToApprove will be defined if currentAllowance is
-    return currentAllowance.lessThan(amountToApprove)
+    // CRITICAL: Always check actual allowance FIRST - this is the source of truth
+    // The isApproved flag is only an optimization and should NOT override actual allowance check
+    // After a swap, allowance decreases, so we must check the actual allowance, not the flag
+    const needsApproval = currentAllowance.lessThan(amountToApprove);
+    const state = needsApproval
       ? pendingApproval
         ? ApprovalState.PENDING
         : ApprovalState.NOT_APPROVED
       : ApprovalState.APPROVED;
-  }, [amountToApprove, currentAllowance, pendingApproval, spender, isApproved]);
+
+    console.log('🔐 [APPROVAL] Approval state calculated', {
+      timestamp: new Date().toISOString(),
+      token: token?.symbol,
+      spender,
+      currentAllowance: currentAllowance.toExact(),
+      amountToApprove: amountToApprove.toExact(),
+      needsApproval,
+      pendingApproval,
+      state,
+    });
+
+    return state;
+  }, [
+    amountToApprove,
+    currentAllowance,
+    pendingApproval,
+    spender,
+    isApproved,
+    token,
+  ]);
 
   const tokenContract = useTokenContract(token?.address);
   const addTransaction = useTransactionAdder();
@@ -136,8 +211,59 @@ export function useApproveCallback(
           approval: { tokenAddress: token.address, spender: spender },
           type: TransactionType.APPROVED,
         });
+
+        // Invalidate allowance query immediately when transaction is submitted
+        // This triggers a refetch so the UI updates as soon as possible
+        if (token?.address && account && spender) {
+          console.log(
+            '🔄 [APPROVAL] Invalidating allowance query after approval submission',
+            {
+              timestamp: new Date().toISOString(),
+              token: token.symbol,
+              tokenAddress: token.address,
+              spender,
+              account,
+            },
+          );
+          queryClient.invalidateQueries({
+            queryKey: ['token-allowance', token.address, account, spender],
+          });
+          // Also refetch immediately to get the updated allowance right away
+          queryClient.refetchQueries({
+            queryKey: ['token-allowance', token.address, account, spender],
+          });
+        }
+
         try {
-          await response.wait();
+          const receipt = await response.wait();
+          console.log('✅ [APPROVAL] Approval transaction confirmed', {
+            timestamp: new Date().toISOString(),
+            token: token?.symbol,
+            hash: receipt.transactionHash,
+          });
+
+          // Invalidate allowance query again after transaction is confirmed
+          // This ensures we have the latest allowance value
+          if (token?.address && account && spender) {
+            console.log(
+              '🔄 [APPROVAL] Invalidating allowance query after approval confirmation',
+              {
+                timestamp: new Date().toISOString(),
+                token: token.symbol,
+                tokenAddress: token.address,
+                spender,
+                account,
+              },
+            );
+            queryClient.invalidateQueries({
+              queryKey: ['token-allowance', token.address, account, spender],
+            });
+            // Also refetch immediately to get the updated allowance right away
+            queryClient.refetchQueries({
+              queryKey: ['token-allowance', token.address, account, spender],
+            });
+          }
+
           setApproved(true);
         } catch (e) {
           setApproved(false);
@@ -186,14 +312,27 @@ export function useApproveCallbackFromTrade(
         : undefined,
     [trade, allowedSlippage],
   );
-  return useApproveCallback(
-    amountToApprove,
-    chainId
-      ? trade instanceof V3Trade
-        ? v3SwapRouterAddress
-        : undefined
-      : undefined,
-  );
+
+  const spender = chainId
+    ? trade instanceof V3Trade
+      ? v3SwapRouterAddress
+      : undefined
+    : undefined;
+
+  console.log('🔐 [APPROVAL] useApproveCallbackFromTrade', {
+    timestamp: new Date().toISOString(),
+    hasTrade: !!trade,
+    inputCurrency: trade?.inputAmount.currency.symbol,
+    inputAmount: trade?.inputAmount.toExact(),
+    amountToApprove: amountToApprove?.toExact(),
+    spender,
+    chainId,
+    isUni,
+    isV4,
+    allowedSlippage: allowedSlippage.toFixed(2),
+  });
+
+  return useApproveCallback(amountToApprove, spender);
 }
 
 export function useApproveCallbackFromZap(

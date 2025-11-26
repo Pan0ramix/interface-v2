@@ -84,7 +84,37 @@ function useSwapCallArguments(
         : SWAP_ROUTER_ADDRESSES[chainId]
       : undefined;
 
-    if (!swapRouterAddress) return [];
+    if (!swapRouterAddress) {
+      console.warn('⚠️ [SWAP] No swap router address found', {
+        timestamp: new Date().toISOString(),
+        chainId,
+        isUni,
+        isV4,
+      });
+      return [];
+    }
+
+    console.log('🔧 [SWAP] Building swap call arguments', {
+      timestamp: new Date().toISOString(),
+      trade: {
+        inputAmount: trade.inputAmount.toExact(),
+        inputCurrency: trade.inputAmount.currency.symbol,
+        outputAmount: trade.outputAmount.toExact(),
+        outputCurrency: trade.outputAmount.currency.symbol,
+        tradeType: trade.tradeType,
+        route: trade.swaps.map((swap) => ({
+          pools: swap.route.pools.length,
+          tokenPath: swap.route.tokenPath.map((t) => t.symbol),
+          poolFees: swap.route.pools.map((p) => p.fee),
+        })),
+      },
+      swapRouterAddress,
+      isUni,
+      isV4,
+      allowedSlippage: allowedSlippage.toFixed(2),
+      deadline: deadline.toString(),
+      hasSignatureData: !!signatureData,
+    });
 
     // if (!routerContract) return []
     const swapMethods: any[] = [];
@@ -152,13 +182,28 @@ function useSwapCallArguments(
       );
     }
 
-    return swapMethods.map(({ calldata, value }) => {
+    const swapCalls = swapMethods.map(({ calldata, value }) => {
       return {
         address: swapRouterAddress,
         calldata,
         value,
       };
     });
+
+    console.log('✅ [SWAP] Swap call arguments built', {
+      timestamp: new Date().toISOString(),
+      swapCallsCount: swapCalls.length,
+      swapCalls: swapCalls.map((call, idx) => ({
+        index: idx + 1,
+        address: call.address,
+        calldataLength: call.calldata?.length,
+        calldataPreview: call.calldata?.slice(0, 100) + '...',
+        hasValue: !!(call.value && !isZero(call.value)),
+        value: call.value?.toString(),
+      })),
+    });
+
+    return swapCalls;
   }, [
     account,
     allowedSlippage,
@@ -393,28 +438,21 @@ export function useSwapCallback(
               })
               .catch((gasError) => {
                 const callDuration = performance.now() - callStartTime;
-                console.error(
-                  `❌ [SWAP] Gas estimate failed for call ${index + 1}`,
+                // This is expected - we try multiple swap methods (fee-on-transfer vs non-fee-on-transfer)
+                // One will succeed, one will fail. Log as debug instead of error.
+                console.debug(
+                  `⚠️ [SWAP] Gas estimate failed for call ${index +
+                    1} (will try fallback)`,
                   {
                     timestamp: new Date().toISOString(),
                     duration: `${callDuration.toFixed(2)}ms`,
                     error: gasError?.message || gasError,
                     errorCode: gasError?.code,
-                    errorData: gasError?.data,
-                    tx: {
-                      to: tx.to,
-                      from: tx.from,
-                      dataLength: tx.data?.length,
-                      hasValue: !!tx.value,
-                    },
+                    note: 'This is expected - trying alternative swap method',
                     chainId,
                   },
                 );
                 const ethCallStartTime = performance.now();
-                console.warn(
-                  `⚠️ [SWAP] Trying eth_call as fallback for call ${index + 1}`,
-                  { timestamp: new Date().toISOString() },
-                );
 
                 return withTimeout(
                   provider.call(tx),
@@ -520,21 +558,18 @@ export function useSwapCallback(
                       ) ||
                       errorMessage.includes('insufficient allowance');
 
-                    console.error(
-                      `❌ [SWAP] eth_call also failed for call ${index + 1}`,
+                    // Log as debug - this is expected when trying alternative swap methods
+                    console.debug(
+                      `⚠️ [SWAP] eth_call also failed for call ${index +
+                        1} (will use fallback gas)`,
                       {
                         timestamp: new Date().toISOString(),
                         duration: `${ethCallDuration.toFixed(2)}ms`,
                         error: errorMessage,
                         errorCode: callError?.code,
-                        errorData: errorData,
                         isAllowanceError,
-                        tx: {
-                          to: tx.to,
-                          from: tx.from,
-                          dataLength: tx.data?.length,
-                          hasValue: !!tx.value,
-                        },
+                        note:
+                          'This is expected - will use calculated fallback gas',
                         chainId,
                       },
                     );
@@ -641,6 +676,22 @@ export function useSwapCallback(
           gasLimit: gasLimit?.toString(),
           hasValue: !!(value && !isZero(value)),
           value: value?.toString(),
+          trade: trade
+            ? {
+                inputAmount: trade.inputAmount.toExact(),
+                inputCurrency: trade.inputAmount.currency.symbol,
+                outputAmount: trade.outputAmount.toExact(),
+                outputCurrency: trade.outputAmount.currency.symbol,
+                tradeType: trade.tradeType,
+                route: trade.swaps.map((swap) => ({
+                  pools: swap.route.pools.length,
+                  tokenPath: swap.route.tokenPath.map((t) => t.symbol),
+                })),
+              }
+            : null,
+          allowedSlippage: allowedSlippage.toFixed(2),
+          calldataLength: calldata?.length,
+          calldataPreview: calldata?.slice(0, 100) + '...',
         });
 
         try {
@@ -658,6 +709,17 @@ export function useSwapCallback(
           if (gasLimit) {
             txParams.gasLimit = gasLimit;
           }
+
+          console.log('📤 [SWAP] Transaction parameters', {
+            timestamp: new Date().toISOString(),
+            txParams: {
+              from: txParams.from,
+              to: txParams.to,
+              gasLimit: txParams.gasLimit?.toString(),
+              value: txParams.value?.toString(),
+              dataLength: txParams.data?.length,
+            },
+          });
 
           const txResponse = await library
             .getSigner()
@@ -702,17 +764,57 @@ export function useSwapCallback(
 
           return { response, summary: withVersion };
         } catch (error) {
-          console.error('❌ [SWAP] Error sending transaction:', error);
+          const errorDetails = {
+            timestamp: new Date().toISOString(),
+            errorCode: error?.code,
+            errorMessage: error?.message,
+            errorReason: error?.reason,
+            errorData: error?.data,
+            receipt: error?.receipt,
+            transaction: error?.transaction,
+            transactionHash: error?.transactionHash,
+            trade: trade
+              ? {
+                  inputAmount: trade.inputAmount.toExact(),
+                  inputCurrency: trade.inputAmount.currency.symbol,
+                  outputAmount: trade.outputAmount.toExact(),
+                  outputCurrency: trade.outputAmount.currency.symbol,
+                  tradeType: trade.tradeType,
+                  route: trade.swaps.map((swap) => ({
+                    pools: swap.route.pools.length,
+                    tokenPath: swap.route.tokenPath.map((t) => t.symbol),
+                  })),
+                }
+              : null,
+            swapCall: {
+              address,
+              calldataLength: calldata?.length,
+              calldataPreview: calldata?.slice(0, 200),
+              hasValue: !!(value && !isZero(value)),
+              value: value?.toString(),
+            },
+            allowedSlippage: allowedSlippage.toFixed(2),
+            chainId,
+          };
+
+          console.error('❌ [SWAP] Error sending transaction:', errorDetails);
+          console.error('❌ [SWAP] Full error object:', error);
+
           // if the user rejected the tx, pass this along
           if (error?.code === 'ACTION_REJECTED') {
             throw new Error('Transaction rejected.');
           } else {
             // otherwise, the error was unexpected and we need to convey that
-            console.error(`Swap failed`, error, address, calldata, value);
-
-            throw new Error(
-              `Swap failed: ${swapErrorToUserReadableMessage(error)}`,
+            const userMessage = swapErrorToUserReadableMessage(error);
+            console.error(
+              `❌ [SWAP] Swap failed with message: ${userMessage}`,
+              {
+                ...errorDetails,
+                userMessage,
+              },
             );
+
+            throw new Error(`Swap failed: ${userMessage}`);
           }
         }
       },

@@ -1,17 +1,23 @@
 import { Currency, CurrencyAmount, Price, Token } from '@uniswap/sdk-core';
 import { useActiveWeb3React } from 'hooks';
 import { useMemo, useRef, useEffect } from 'react';
-import { useBestV3TradeExactOut, V3TradeState } from './useBestV3Trade';
+import { useBestV3TradeExactIn, V3TradeState } from './useBestV3Trade';
 import { ChainId } from '@uniswap/sdk';
 import { toV3Token, USDC } from 'constants/v3/addresses';
 
 /**
  * Returns the price in USDC of the input currency
  * @param currency currency to compute the USDC price of
+ * @param allLiquidity if true, use minimal amount (1 wei) for price calculation
+ * @param customAmountIn optional custom amount of currency to use for price calculation.
+ *                       If provided, this will be used instead of the default amount.
+ *                       This allows using the actual swap amount for more accurate pricing
+ *                       and to detect insufficient liquidity for the user's intended swap.
  */
 export default function useUSDCPrice(
   currency?: Currency,
   allLiquidity?: boolean,
+  customAmountIn?: CurrencyAmount<Currency>,
 ): Price<Currency, Token> | undefined {
   const { chainId } = useActiveWeb3React();
   const chainIdToUse = chainId ? chainId : ChainId.MATIC;
@@ -22,25 +28,29 @@ export default function useUSDCPrice(
     [USDC_TOKEN],
   );
 
-  // On Base Sepolia, use smaller amount for price calculation (faster, less likely to fail)
-  // For other chains, use the standard large amount
-  const isBaseSepolia = chainId !== undefined && Number(chainId) === 84532;
+  const stablecoin = USDC_V3_TOKEN;
 
-  const amountOut = useMemo(() => {
-    if (!chainId || !USDC_V3_TOKEN) return undefined;
-    const amount = allLiquidity
-      ? 1
-      : isBaseSepolia
-      ? 1000e6 // 1000 USDC for Base Sepolia
-      : 100_000e1; // 1M for others
-    return CurrencyAmount.fromRawAmount(USDC_V3_TOKEN, amount);
-  }, [chainId, allLiquidity, isBaseSepolia, USDC_V3_TOKEN]);
+  // Use custom amount if provided (actual swap amount), otherwise use default amounts
+  // This allows the swap page to use the actual swap amount for price calculation,
+  // which is more accurate and will fail if liquidity is insufficient for the user's swap
+  // No special handling for USDC - treat it like any other token
+  const amountIn = useMemo(() => {
+    if (customAmountIn) {
+      // Use the actual swap amount - this is the currency amount the user wants to swap
+      return customAmountIn;
+    }
 
-  const stablecoin = amountOut?.currency;
+    // Default: use a reasonable amount for price calculation
+    if (!chainId || !currency || !USDC_V3_TOKEN) return undefined;
+    const amount = allLiquidity ? 1 : 100_000e1; // Default: 1M for accurate pricing
+    return CurrencyAmount.fromRawAmount(currency, amount);
+  }, [chainId, allLiquidity, currency, customAmountIn, USDC_V3_TOKEN]);
 
   const priceCalcStartTimeRef = useRef<number | null>(null);
   const prevCurrencyRef = useRef<Currency | undefined>(currency);
-  const prevAmountOutRef = useRef<CurrencyAmount<Token> | undefined>(amountOut);
+  const prevAmountInRef = useRef<CurrencyAmount<Currency> | undefined>(
+    amountIn,
+  );
 
   // Create stable currency identifier for comparison and memoization
   const currencyId = useMemo(() => {
@@ -53,86 +63,67 @@ export default function useUSDCPrice(
     return `${stablecoin.chainId}-${stablecoin.address}`;
   }, [stablecoin]);
 
-  // Only calculate trade if we have valid inputs and currency is not the stablecoin
-  // Use stable IDs to prevent unnecessary recalculations
+  // Only calculate trade if we have valid inputs
+  // Special case: If currency IS USDC, we don't need to find a route (it's 1:1)
   const shouldCalculateTrade = useMemo(() => {
-    if (
-      !currency ||
-      !amountOut ||
-      !stablecoin ||
-      !currencyId ||
-      !stablecoinId
-    ) {
+    if (!currency || !amountIn || !stablecoin || !currencyId || !stablecoinId) {
       return false;
     }
-    // Early return if currency equals stablecoin (using ID comparison for speed)
-    if (currencyId === stablecoinId) {
+    // If currency equals stablecoin (USDC), skip trade calculation (it's 1:1)
+    if (currencyId === stablecoinId || currency.wrapped.equals(stablecoin)) {
       return false;
     }
-    // Double-check with equals for safety
-    return !currency.wrapped.equals(stablecoin);
-  }, [currency, amountOut, stablecoin, currencyId, stablecoinId]);
+    return true;
+  }, [currency, amountIn, stablecoin, currencyId, stablecoinId]);
 
   // Track when price calculation starts
   useEffect(() => {
-    // Log when currency or amountOut changes
+    // Only log when we actually start calculating (not for undefined currency or stablecoin)
     if (
       currency !== prevCurrencyRef.current ||
-      amountOut !== prevAmountOutRef.current
+      amountIn !== prevAmountInRef.current
     ) {
-      if (!currency) {
-        console.debug('💰 [PRICE] Currency is undefined', {
-          timestamp: new Date().toISOString(),
-          chainId,
-          hasUSDC: !!USDC_V3_TOKEN,
-        });
-      } else if (!shouldCalculateTrade && currency && stablecoin) {
-        console.debug(
-          '💰 [PRICE] Currency equals stablecoin, skipping price calc',
-          {
-            timestamp: new Date().toISOString(),
-            currency: currency?.symbol,
-            stablecoin: stablecoin?.symbol,
-          },
-        );
-      } else if (currency && !USDC_V3_TOKEN) {
-        console.warn('⚠️ [PRICE] USDC token not available for chain', {
-          chainId,
-          currency: currency?.symbol,
-        });
-      } else if (shouldCalculateTrade) {
+      // Only log when we have a valid currency and should calculate
+      if (shouldCalculateTrade && currency && USDC_V3_TOKEN) {
         priceCalcStartTimeRef.current = performance.now();
         console.log('💰 [PRICE] Price calculation started', {
           timestamp: new Date().toISOString(),
           currency: currency?.symbol,
           currencyAddress: currency?.wrapped?.address,
           chainId,
-          amountOut: amountOut?.toSignificant(4),
-          isBaseSepolia,
-          hasUSDC: !!USDC_V3_TOKEN,
+          amountIn: amountIn?.toSignificant(4),
+          isCustomAmount: !!customAmountIn,
+        });
+      } else if (currency && !USDC_V3_TOKEN) {
+        // Only warn if we have a currency but no USDC token (actual issue)
+        console.warn('⚠️ [PRICE] USDC token not available for chain', {
+          chainId,
+          currency: currency?.symbol,
         });
       }
+      // Removed debug logs for undefined currency and stablecoin (too verbose)
     }
     prevCurrencyRef.current = currency;
-    prevAmountOutRef.current = amountOut;
+    prevAmountInRef.current = amountIn;
   }, [
     currency,
-    amountOut,
+    amountIn,
     USDC_V3_TOKEN,
     chainId,
-    isBaseSepolia,
+    customAmountIn,
     shouldCalculateTrade,
     stablecoin,
   ]);
 
   // Only call trade hooks when we should calculate
-  const v3USDCTrade = useBestV3TradeExactOut(
-    shouldCalculateTrade ? currency : undefined,
-    shouldCalculateTrade ? amountOut : undefined,
+  // Use ExactIn: "If I put in X amount of currency, how much USDC do I get out?"
+  const v3USDCTrade = useBestV3TradeExactIn(
+    shouldCalculateTrade ? amountIn : undefined,
+    shouldCalculateTrade ? stablecoin : undefined,
   );
-  const v4USDCTrade = useBestV3TradeExactOut(
-    shouldCalculateTrade ? currency : undefined,
-    shouldCalculateTrade ? amountOut : undefined,
+  const v4USDCTrade = useBestV3TradeExactIn(
+    shouldCalculateTrade ? amountIn : undefined,
+    shouldCalculateTrade ? stablecoin : undefined,
     true,
   );
 
@@ -182,11 +173,13 @@ export default function useUSDCPrice(
       return undefined;
     }
 
-    // handle usdc
-    if (currency?.wrapped.equals(stablecoin)) {
+    // Special case: If currency IS USDC, return 1:1 price directly
+    // No need to find a trade route for USDC/USDC (which doesn't exist)
+    if (currency.wrapped.equals(stablecoin)) {
       return new Price(stablecoin, stablecoin, '1', '1');
     }
 
+    // For other currencies, use the trade route to calculate price
     if (v3USDCTrade.trade) {
       const { numerator, denominator } = v3USDCTrade.trade.route.midPrice;
       return new Price(currency, stablecoin, denominator, numerator);
@@ -204,8 +197,13 @@ export default function useUSDCPrice(
 export function useUSDCValue(
   currencyAmount: CurrencyAmount<Currency> | undefined | null,
   allLiquidity = false,
+  customAmountIn?: CurrencyAmount<Currency>,
 ) {
-  const price = useUSDCPrice(currencyAmount?.currency, allLiquidity);
+  const price = useUSDCPrice(
+    currencyAmount?.currency,
+    allLiquidity,
+    customAmountIn,
+  );
 
   return useMemo(() => {
     if (!price || !currencyAmount) return null;
