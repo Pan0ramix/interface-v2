@@ -25,7 +25,7 @@ export const rpcMap = {
   [ChainId.MINATO]: 'https://rpc.minato.soneium.org',
   [ChainId.SONEIUM]: 'https://rpc.soneium.org/',
   [ChainId.SOMNIA]: 'https://dream-rpc.somnia.network/',
-  84532: 'https://sepolia.base.org', // Base Sepolia
+  84532: 'https://base-sepolia.g.alchemy.com/v2/IwF-m0FV1GwwbENrzES78', // Base Sepolia (Alchemy)
 };
 
 class AppJsonRpcProvider extends StaticJsonRpcProvider {
@@ -37,7 +37,7 @@ class AppJsonRpcProvider extends StaticJsonRpcProvider {
     return this._blockCache;
   }
 
-  constructor(chainId: ChainId) {
+  constructor(chainId: ChainId | number) {
     super(rpcMap[chainId], {
       chainId,
       name: CHAIN_IDS_TO_NAMES[chainId],
@@ -75,6 +75,8 @@ class AppJsonRpcProvider extends StaticJsonRpcProvider {
  */
 export const RPC_PROVIDERS: {
   [key in ChainId]: StaticJsonRpcProvider;
+} & {
+  [key: number]: StaticJsonRpcProvider;
 } = {
   [ChainId.ETHEREUM]: new AppJsonRpcProvider(ChainId.ETHEREUM),
   [ChainId.MATIC]: new AppJsonRpcProvider(ChainId.MATIC),
@@ -97,4 +99,10 @@ export const RPC_PROVIDERS: {
   [ChainId.MINATO]: new AppJsonRpcProvider(ChainId.MINATO),
   [ChainId.SONEIUM]: new AppJsonRpcProvider(ChainId.SONEIUM),
   [ChainId.SOMNIA]: new AppJsonRpcProvider(ChainId.SOMNIA),
+  // Base Sepolia (84532) - not in ChainId enum, but needed for RPC provider
+  84532: new AppJsonRpcProvider(84532),
+} as {
+  [key in ChainId]: StaticJsonRpcProvider;
+} & {
+  [key: number]: StaticJsonRpcProvider;
 };

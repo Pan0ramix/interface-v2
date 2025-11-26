@@ -136,6 +136,18 @@ const CurrencySearch: React.FC<CurrencySearchProps> = ({
 
   useEffect(() => {
     if (isAddressSearch) {
+      console.log('🔍 CurrencySearch - Address search:', {
+        searchQuery,
+        isAddressSearch,
+        searchToken: searchToken
+          ? { address: searchToken.address, symbol: searchToken.symbol }
+          : searchToken,
+      });
+    }
+  }, [isAddressSearch, searchQuery, searchToken]);
+
+  useEffect(() => {
+    if (isAddressSearch) {
       ReactGA.event({
         category: 'Currency Select',
         action: 'Search by address',
@@ -158,7 +170,18 @@ const CurrencySearch: React.FC<CurrencySearchProps> = ({
   const tokenComparator = useTokenComparator(false);
 
   const filteredTokens: Token[] = useMemo(() => {
-    if (isAddressSearch) return searchToken ? [searchToken] : [];
+    if (isAddressSearch) {
+      const result = searchToken ? [searchToken] : [];
+      console.log('🔍 CurrencySearch - filteredTokens for address search:', {
+        searchQuery,
+        searchToken: searchToken
+          ? { address: searchToken.address, symbol: searchToken.symbol }
+          : searchToken,
+        resultCount: result.length,
+        result: result.map((t) => ({ address: t.address, symbol: t.symbol })),
+      });
+      return result;
+    }
     let updatedTokens = Object.values(allTokens);
 
     if (tab === 'favorites') {

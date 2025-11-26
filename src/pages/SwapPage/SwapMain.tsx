@@ -106,7 +106,6 @@ const SwapMain: React.FC = () => {
     if (!dropdownTab) return 'bestTrade';
     return dropdownTab.name;
   }, [SwapDropdownTabs, swapType]);
-  console.log('🚀 ~ dropDownMenuText ~ dropDownMenuText:', dropDownMenuText);
 
   const [selectedIndex, setSelectedIndex] = React.useState(
     Number(swapType?.toString() ?? '0'),
@@ -154,7 +153,6 @@ const SwapMain: React.FC = () => {
   };
 
   useEffect(() => {
-    console.log('swapType', swapType);
     if (
       !swapType ||
       (Number(swapType) === SWAP_BEST_TRADE && !showBestTrade) ||

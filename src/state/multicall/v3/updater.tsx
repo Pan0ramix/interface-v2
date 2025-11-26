@@ -17,6 +17,7 @@ import {
   useMulticall3Contract,
 } from 'hooks/useContract';
 import { getConfig } from 'config/index';
+import { ethers } from 'ethers';
 
 const DEFAULT_CALL_GAS_REQUIRED = 10_000_000;
 
@@ -38,6 +39,22 @@ async function fetchChunk(
   chainId?: number,
   provider?: any,
 ): Promise<{ success: boolean; returnData: string }[]> {
+  const chunkStartTime = performance.now();
+  const isQuoteCall = chunk.some(
+    (call) =>
+      call.callData?.startsWith('0x414bf389') || // quoteExactInput
+      call.callData?.startsWith('0xdb3e2198'), // quoteExactOutput
+  );
+
+  if (isQuoteCall && chunk.length > 0) {
+    console.log('📞 [MULTICALL] Fetching quote chunk', {
+      timestamp: new Date().toISOString(),
+      chunkSize: chunk.length,
+      chainId,
+      blockNumber,
+    });
+  }
+
   const config = getConfig(chainId);
   const maxChunks = config['maxChunks'] ?? CHUNK_SIZE;
   // Base Sepolia (84532) is not in ChainId enum, so we check the number value
@@ -86,9 +103,17 @@ async function fetchChunk(
           throw error;
         }
 
-        // Removed verbose logging
+        // Add timeout for quote calls on Base Sepolia to prevent hanging
+        const isQuoteChunk = localChunk.some(
+          (call) =>
+            call.callData?.startsWith('0x414bf389') || // quoteExactInput
+            call.callData?.startsWith('0xdb3e2198'), // quoteExactOutput
+        );
+        const QUOTE_TIMEOUT_MS = 15000; // 15 seconds for quote calls
+        const timeout = isQuoteChunk ? QUOTE_TIMEOUT_MS : 30000; // 30 seconds for other calls
+
         try {
-          const resultsRaw = await multicall3.callStatic.tryAggregate(
+          const resultsRawPromise = multicall3.callStatic.tryAggregate(
             false, // requireSuccess = false (allow individual failures)
             localChunk.map((obj) => ({
               target: obj.address,
@@ -97,6 +122,26 @@ async function fetchChunk(
             })),
             { blockTag: blockNumber },
           );
+
+          // Add timeout wrapper for quote calls to prevent hanging
+          const resultsRaw = isQuoteChunk
+            ? await Promise.race([
+                resultsRawPromise,
+                new Promise<never>((_, reject) =>
+                  setTimeout(() => {
+                    console.warn('⏰ [MULTICALL] Quote chunk timed out', {
+                      timestamp: new Date().toISOString(),
+                      timeout: `${timeout}ms`,
+                      chunkSize: localChunk.length,
+                      chainId,
+                    });
+                    reject(
+                      new Error(`Quote multicall timed out after ${timeout}ms`),
+                    );
+                  }, timeout),
+                ),
+              ])
+            : await resultsRawPromise;
 
           // Removed verbose logging
 
@@ -111,29 +156,71 @@ async function fetchChunk(
                 returnData: r.returnData || '0x',
               };
 
-              // Debug failed calls - especially pool calls for Base Sepolia
-              if (!r.success && process.env.NODE_ENV === 'development') {
+              // Debug failed calls - especially pool calls and quote calls for Base Sepolia
+              if (!r.success) {
                 const selector = localChunk[idx]?.callData?.slice(0, 10);
                 const isPoolCall =
                   selector === '0x3850c7bd' || selector === '0x1a686502'; // globalState/slot0 // liquidity
+                const isQuoteCall =
+                  selector === '0x414bf389' || // quoteExactInput
+                  selector === '0xdb3e2198' || // quoteExactOutput (Algebra)
+                  selector === '0x2f80bb1d'; // quoteExactOutput (UniV3)
+
+                // Decode error message if available
+                let errorMessage = 'Unknown error';
+                if (r.returnData && r.returnData.length > 10) {
+                  try {
+                    // Check if it's a standard Error(string) revert (selector 0x08c379a0)
+                    if (r.returnData.startsWith('0x08c379a0')) {
+                      const decoded = ethers.utils.defaultAbiCoder.decode(
+                        ['string'],
+                        '0x' + r.returnData.slice(10),
+                      );
+                      errorMessage = decoded[0];
+                    } else {
+                      errorMessage = `Revert (not Error string): ${r.returnData.slice(
+                        0,
+                        20,
+                      )}...`;
+                    }
+                  } catch (e) {
+                    errorMessage = `Failed to decode error: ${e.message}`;
+                  }
+                }
 
                 if (
                   isPoolCall ||
+                  isQuoteCall ||
                   (chainId !== undefined && Number(chainId) === 84532)
                 ) {
-                  console.warn('Pool call failed on Base Sepolia', {
-                    index: idx,
-                    target: localChunk[idx]?.address,
-                    selector: selector,
-                    methodName:
-                      selector === '0x3850c7bd'
-                        ? 'globalState/slot0'
-                        : selector === '0x1a686502'
-                        ? 'liquidity'
-                        : 'unknown',
-                    returnData: r.returnData || '0x',
-                    callDataLength: localChunk[idx]?.callData?.length,
-                  });
+                  const methodName =
+                    selector === '0x3850c7bd'
+                      ? 'globalState/slot0'
+                      : selector === '0x1a686502'
+                      ? 'liquidity'
+                      : selector === '0x414bf389'
+                      ? 'quoteExactInput'
+                      : selector === '0xdb3e2198'
+                      ? 'quoteExactOutput (Algebra)'
+                      : selector === '0x2f80bb1d'
+                      ? 'quoteExactOutput (UniV3)'
+                      : 'unknown';
+
+                  console.warn(
+                    isQuoteCall
+                      ? '❌ [QUOTER] Quote call failed on Base Sepolia'
+                      : 'Pool call failed on Base Sepolia',
+                    {
+                      index: idx,
+                      target: localChunk[idx]?.address,
+                      selector: selector,
+                      methodName,
+                      errorMessage,
+                      returnData: r.returnData || '0x',
+                      callDataLength: localChunk[idx]?.callData?.length,
+                      callDataPreview: localChunk[idx]?.callData?.slice(0, 100),
+                    },
+                  );
                 }
               }
 
@@ -207,8 +294,32 @@ async function fetchChunk(
         });
       }
     }
+
+    const chunkDuration = performance.now() - chunkStartTime;
+    if (isQuoteCall && chunkDuration > 1000) {
+      // Log if quote chunk took more than 1 second
+      console.log('⏳ [MULTICALL] Quote chunk fetch completed', {
+        timestamp: new Date().toISOString(),
+        duration: `${chunkDuration.toFixed(2)}ms`,
+        chunkSize: chunk.length,
+        chainId,
+        successCount: finalReturnData.filter((r) => r.success).length,
+        failCount: finalReturnData.filter((r) => !r.success).length,
+      });
+    }
+
     return finalReturnData;
   } catch (error) {
+    const chunkDuration = performance.now() - chunkStartTime;
+    if (isQuoteCall) {
+      console.error('❌ [MULTICALL] Quote chunk fetch failed', {
+        timestamp: new Date().toISOString(),
+        duration: `${chunkDuration.toFixed(2)}ms`,
+        chunkSize: chunk.length,
+        chainId,
+        error: error?.message || error,
+      });
+    }
     if (
       error.error?.code === -32000 ||
       error.error?.message?.indexOf('header not found') !== -1
@@ -249,11 +360,19 @@ async function fetchChunk(
       }
       // If single call fails and it's a revert error, return failed results instead of throwing
       // This prevents the entire multicall from failing and blocking the UI
-      if (process.env.NODE_ENV === 'development') {
+      const isTimeoutError =
+        error?.message?.includes('timed out') ||
+        error?.message?.includes('timeout');
+
+      if (isTimeoutError || process.env.NODE_ENV === 'development') {
         console.warn(
           `Multicall failed for chunk, returning failed results to prevent blocking:`,
-          chunk.length,
-          error?.message || error,
+          {
+            chunkSize: chunk.length,
+            error: error?.message || error,
+            isTimeout: isTimeoutError,
+            chainId,
+          },
         );
 
         // Debug fallback: For Base Sepolia, try individual calls to isolate the failing one

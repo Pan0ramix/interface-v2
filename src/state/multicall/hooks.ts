@@ -197,10 +197,21 @@ export function useSingleContractMultipleData(
   callInputs: OptionalMethodInputs[],
   options?: ListenerOptions,
 ): CallState[] {
-  const fragment = useMemo(() => contract?.interface?.getFunction(methodName), [
-    contract,
-    methodName,
-  ]);
+  const fragment = useMemo(() => {
+    // Early return if no contract - prevents any fragment lookup attempts
+    if (!contract || !contract.interface) return undefined;
+
+    // Safely get the function fragment, handling cases where the function doesn't exist
+    // Multicall3 doesn't have getEthBalance, so we need to handle this gracefully
+    try {
+      return contract.interface.getFunction(methodName);
+    } catch (error) {
+      // Any error getting the function means it doesn't exist or isn't accessible
+      // Return undefined to prevent the hook from crashing
+      // This handles cases like Multicall3 which doesn't have getEthBalance
+      return undefined;
+    }
+  }, [contract, methodName]);
 
   const calls = useMemo(
     () =>
@@ -283,10 +294,22 @@ export function useSingleCallResult(
   options?: ListenerOptions,
   ignore?: boolean,
 ): CallState {
-  const fragment = useMemo(() => contract?.interface?.getFunction(methodName), [
-    contract,
-    methodName,
-  ]);
+  const fragment = useMemo(() => {
+    // Early return if no contract - prevents any fragment lookup attempts
+    if (!contract || !contract.interface) return undefined;
+
+    // Safely get the function fragment, handling cases where the function doesn't exist
+    // Multicall3 doesn't have getCurrentBlockTimestamp or getEthBalance, so we need to handle this gracefully
+    try {
+      return contract.interface.getFunction(methodName);
+    } catch (error) {
+      // Any error getting the function means it doesn't exist or isn't accessible
+      // Return undefined to prevent the hook from crashing
+      // This handles cases like Multicall3 which doesn't have certain functions
+      // Function not found - expected for Multicall3 on Base Sepolia
+      return undefined;
+    }
+  }, [contract, methodName]);
 
   const calls = useMemo<Call[]>(() => {
     return contract && fragment && isValidMethodArgs(inputs)

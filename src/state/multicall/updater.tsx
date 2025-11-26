@@ -28,23 +28,87 @@ const DEFAULT_GAS_REQUIRED = 1_000_000;
  * @param multicallContract multicall contract to fetch against
  * @param chunk chunk of calls to make
  * @param minBlockNumber minimum block number of the result set
+ * @param chainId chain ID to determine which multicall function to use
  */
 async function fetchChunk(
   multicall: Contract,
   chunk: Call[],
   blockNumber: number,
+  chainId?: number,
 ): Promise<{ success: boolean; returnData: string }[]> {
   //console.debug('Fetching chunk', chunk, blockNumber);
   try {
-    const { returnData } = await multicall.callStatic.tryBlockAndAggregate(
-      false,
-      chunk.map((obj) => ({
+    // Base Sepolia (84532) uses Multicall3 which has tryAggregate, not tryBlockAndAggregate
+    const isBaseSepolia = chainId === 84532;
+    // Check if functions exist by trying to get them
+    let hasTryAggregate = false;
+    let hasTryBlockAndAggregate = false;
+    if (multicall.interface) {
+      try {
+        multicall.interface.getFunction('tryAggregate');
+        hasTryAggregate = true;
+      } catch {
+        hasTryAggregate = false;
+      }
+      try {
+        multicall.interface.getFunction('tryBlockAndAggregate');
+        hasTryBlockAndAggregate = true;
+      } catch {
+        hasTryBlockAndAggregate = false;
+      }
+    }
+
+    let returnData: { success: boolean; returnData: string; gasUsed?: any }[];
+
+    if (isBaseSepolia || (hasTryAggregate && !hasTryBlockAndAggregate)) {
+      // Use Multicall3's tryAggregate (no per-call gasLimit, no blockTag)
+      const calls = chunk.map((obj) => ({
         target: obj.address,
         callData: obj.callData,
-        gasLimit: obj.gasRequired ?? 1_000_000,
-      })),
-      { blockTag: blockNumber },
-    );
+      }));
+
+      if (process.env.NODE_ENV === 'development') {
+        console.log(
+          '🔍 [Multicall] Using Multicall3 tryAggregate for Base Sepolia:',
+          {
+            chainId,
+            multicallAddress: multicall.address,
+            callsCount: calls.length,
+          },
+        );
+      }
+
+      const results = await multicall.callStatic.tryAggregate(false, calls);
+      // Adapt Multicall3 format to match Multicall2 format
+      returnData = results.map((result: any) => ({
+        success: result.success,
+        returnData: result.returnData,
+        gasUsed: undefined, // Multicall3 doesn't provide gasUsed per call
+      }));
+
+      if (process.env.NODE_ENV === 'development') {
+        const successCount = returnData.filter((r) => r.success).length;
+        console.log('✅ [Multicall] Multicall3 results:', {
+          total: returnData.length,
+          successful: successCount,
+          failed: returnData.length - successCount,
+        });
+      }
+    } else {
+      // Use Multicall2's tryBlockAndAggregate (supports per-call gasLimit and blockTag)
+      const {
+        returnData: result,
+      } = await multicall.callStatic.tryBlockAndAggregate(
+        false,
+        chunk.map((obj) => ({
+          target: obj.address,
+          callData: obj.callData,
+          gasLimit: obj.gasRequired ?? 1_000_000,
+        })),
+        { blockTag: blockNumber },
+      );
+      returnData = result;
+    }
 
     if (process.env.NODE_ENV === 'development') {
       returnData.forEach(({ gasUsed, returnData, success }: any, i: number) => {
@@ -53,6 +117,7 @@ async function fetchChunk(
           gasUsed &&
           returnData.length === 2 &&
           gasUsed &&
+          gasUsed.gte &&
           gasUsed.gte(
             Math.floor((chunk[i].gasRequired ?? DEFAULT_GAS_REQUIRED) * 0.95),
           )
@@ -216,7 +281,8 @@ export default function Updater(): null {
       blockNumber: latestBlockNumber,
       cancellations: chunkedCalls.map((chunk, index) => {
         const { cancel, promise } = retry(
-          () => fetchChunk(multicallContract, chunk, latestBlockNumber),
+          () =>
+            fetchChunk(multicallContract, chunk, latestBlockNumber, chainId),
           {
             n: Infinity,
             minWait: 1000,

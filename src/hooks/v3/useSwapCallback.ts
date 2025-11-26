@@ -5,6 +5,7 @@ import { Currency, Percent, TradeType } from '@uniswap/sdk-core';
 import { useMemo } from 'react';
 import { SignatureData } from './useERC20Permit';
 import { Version } from './useToggledVersion';
+import { ethers } from 'ethers';
 
 // import abi from '../abis/swap-router.json'
 import { calculateGasMargin, isAddress, isZero, shortenAddress } from 'utils';
@@ -21,6 +22,7 @@ import { getTradeVersion } from 'utils/v3/getTradeVersion';
 import { useTransactionAdder } from 'state/transactions/hooks';
 import { TransactionType } from 'models/enums';
 import { ChainId } from '@uniswap/sdk';
+import { RPC_PROVIDERS } from 'constants/providers';
 
 enum SwapCallbackState {
   INVALID,
@@ -203,6 +205,14 @@ function swapErrorToUserReadableMessage(error: any): string {
     case 'TF':
       return `The output token cannot be transferred. There may be an issue with the output token. Note: rebase tokens are incompatible with Quickswap.`;
     default:
+      // Check for ERC20 allowance errors
+      if (
+        reason?.includes('transfer amount exceeds allowance') ||
+        reason?.includes('ERC20: transfer amount exceeds allowance') ||
+        reason?.includes('insufficient allowance')
+      ) {
+        return `Insufficient token approval. Please approve the token before swapping. The approval amount must be at least the swap amount plus slippage.`;
+      }
       if (reason?.indexOf('undefined is not an object') !== -1) {
         console.error(error, reason);
         return `An error occurred when trying to execute this swap. You may need to increase your slippage tolerance. If that does not work, there may be an incompatibility with the token you are trading. Note: rebase tokens are incompatible with Algebra.`;
@@ -275,8 +285,60 @@ export function useSwapCallback(
         response: TransactionResponse;
         summary: string;
       }> {
+        const swapStartTime = performance.now();
+        console.log('🔄 [SWAP] Swap callback started', {
+          timestamp: new Date().toISOString(),
+          swapCallsCount: swapCalls.length,
+          chainId,
+          trade: trade
+            ? {
+                input: `${trade.inputAmount.toSignificant(4)} ${
+                  trade.inputAmount.currency.symbol
+                }`,
+                output: `${trade.outputAmount.toSignificant(4)} ${
+                  trade.outputAmount.currency.symbol
+                }`,
+              }
+            : null,
+        });
+
+        // On Base Sepolia, use RPC provider for gas estimation (Alchemy is faster than MetaMask's provider)
+        // For other chains, use MetaMask's provider
+        const isBaseSepolia =
+          chainId !== undefined && Number(chainId) === 84532;
+
+        // Use RPC provider (Alchemy) for gas estimation on Base Sepolia (faster/more reliable)
+        // Use MetaMask provider for other chains
+        const gasEstimationProvider =
+          isBaseSepolia && chainId ? RPC_PROVIDERS[chainId] : library;
+
+        const gasEstimationStartTime = performance.now();
+        console.log('⛽ [SWAP] Starting gas estimation', {
+          timestamp: new Date().toISOString(),
+          provider: isBaseSepolia ? 'ALCHEMY_RPC' : 'METAMASK',
+          swapCallsCount: swapCalls.length,
+          chainId,
+        });
+
+        // Add timeout wrapper for gas estimation
+        const withTimeout = <T>(
+          promise: Promise<T>,
+          timeoutMs: number,
+          errorMessage: string,
+        ): Promise<T> => {
+          return Promise.race([
+            promise,
+            new Promise<T>((_, reject) =>
+              setTimeout(() => reject(new Error(errorMessage)), timeoutMs),
+            ),
+          ]);
+        };
+
+        // Try gas estimation with appropriate provider
+        // On Base Sepolia, use Alchemy RPC provider (faster); on other chains, use MetaMask provider
         const estimatedCalls: SwapCallEstimate[] = await Promise.all(
-          swapCalls.map((call) => {
+          swapCalls.map((call, index) => {
+            const callStartTime = performance.now();
             const { address, calldata, value } = call;
 
             const tx =
@@ -289,28 +351,129 @@ export function useSwapCallback(
                     value,
                   };
 
-            return library
-              .estimateGas(tx)
+            console.log(
+              `⛽ [SWAP] Estimating gas for call ${index + 1}/${
+                swapCalls.length
+              }`,
+              {
+                timestamp: new Date().toISOString(),
+                callIndex: index + 1,
+                to: address,
+                dataLength: calldata?.length,
+                hasValue: !!value,
+              },
+            );
+
+            // Use Alchemy RPC provider for Base Sepolia, MetaMask provider for others
+            const provider = gasEstimationProvider || library;
+
+            // On Base Sepolia with Alchemy, use longer timeout since it should work
+            // For other chains, use standard timeout
+            const timeout = isBaseSepolia ? 10000 : 10000; // 10s for both (Alchemy should be fast)
+
+            return withTimeout(
+              provider.estimateGas(tx),
+              timeout,
+              'Gas estimation timed out',
+            )
               .then((gasEstimate) => {
+                const callDuration = performance.now() - callStartTime;
+                console.log(
+                  `✅ [SWAP] Gas estimate successful for call ${index + 1}`,
+                  {
+                    timestamp: new Date().toISOString(),
+                    duration: `${callDuration.toFixed(2)}ms`,
+                    gasEstimate: gasEstimate.toString(),
+                  },
+                );
                 return {
                   call,
                   gasEstimate,
                 };
               })
               .catch((gasError) => {
-                console.debug(
-                  'Gas estimate failed, trying eth_call to extract error',
-                  call,
+                const callDuration = performance.now() - callStartTime;
+                console.error(
+                  `❌ [SWAP] Gas estimate failed for call ${index + 1}`,
+                  {
+                    timestamp: new Date().toISOString(),
+                    duration: `${callDuration.toFixed(2)}ms`,
+                    error: gasError?.message || gasError,
+                    errorCode: gasError?.code,
+                    errorData: gasError?.data,
+                    tx: {
+                      to: tx.to,
+                      from: tx.from,
+                      dataLength: tx.data?.length,
+                      hasValue: !!tx.value,
+                    },
+                    chainId,
+                  },
+                );
+                const ethCallStartTime = performance.now();
+                console.warn(
+                  `⚠️ [SWAP] Trying eth_call as fallback for call ${index + 1}`,
+                  { timestamp: new Date().toISOString() },
                 );
 
-                return library
-                  .call(tx)
+                return withTimeout(
+                  provider.call(tx),
+                  timeout, // Use same timeout for eth_call
+                  'eth_call timed out',
+                )
                   .then((result) => {
+                    const ethCallDuration =
+                      performance.now() - ethCallStartTime;
+
+                    // Check if result is a revert (starts with Error selector 0x08c379a0)
+                    if (
+                      result &&
+                      typeof result === 'string' &&
+                      result.startsWith('0x08c379a0')
+                    ) {
+                      // Decode the error message
+                      let errorMessage = 'execution reverted';
+                      try {
+                        const decoded = ethers.utils.defaultAbiCoder.decode(
+                          ['string'],
+                          '0x' + result.slice(10),
+                        );
+                        errorMessage = decoded[0];
+                      } catch (e) {
+                        // If decoding fails, use generic message
+                      }
+
+                      console.error(
+                        `❌ [SWAP] eth_call returned revert for call ${index +
+                          1}`,
+                        {
+                          timestamp: new Date().toISOString(),
+                          duration: `${ethCallDuration.toFixed(2)}ms`,
+                          errorMessage,
+                          result: result.slice(0, 100) + '...',
+                          call,
+                        },
+                      );
+                      return {
+                        call,
+                        error: new Error(
+                          swapErrorToUserReadableMessage({
+                            message: `execution reverted: ${errorMessage}`,
+                          }),
+                        ),
+                      };
+                    }
+
+                    // If we get here, the call actually succeeded (unexpected)
                     console.debug(
-                      'Unexpected successful call after failed estimate gas',
-                      call,
-                      gasError,
-                      result,
+                      '⚠️ [SWAP] Unexpected successful call after failed estimate gas',
+                      {
+                        timestamp: new Date().toISOString(),
+                        duration: `${ethCallDuration.toFixed(2)}ms`,
+                        call,
+                        gasError,
+                        result,
+                      },
                     );
                     return {
                       call,
@@ -320,11 +483,82 @@ export function useSwapCallback(
                     };
                   })
                   .catch((callError) => {
-                    console.debug('Call threw error', call, callError);
+                    const ethCallDuration =
+                      performance.now() - ethCallStartTime;
+
+                    // Extract error message from callError
+                    let errorMessage =
+                      callError?.message ||
+                      callError?.toString() ||
+                      'Unknown error';
+                    const errorData = callError?.data;
+
+                    // Check if errorData contains revert reason
+                    if (
+                      errorData &&
+                      typeof errorData === 'string' &&
+                      errorData.startsWith('0x08c379a0')
+                    ) {
+                      try {
+                        const decoded = ethers.utils.defaultAbiCoder.decode(
+                          ['string'],
+                          '0x' + errorData.slice(10),
+                        );
+                        errorMessage = decoded[0];
+                      } catch (e) {
+                        // If decoding fails, use original message
+                      }
+                    }
+
+                    // Check for allowance errors
+                    const isAllowanceError =
+                      errorMessage.includes(
+                        'transfer amount exceeds allowance',
+                      ) ||
+                      errorMessage.includes(
+                        'ERC20: transfer amount exceeds allowance',
+                      ) ||
+                      errorMessage.includes('insufficient allowance');
+
+                    console.error(
+                      `❌ [SWAP] eth_call also failed for call ${index + 1}`,
+                      {
+                        timestamp: new Date().toISOString(),
+                        duration: `${ethCallDuration.toFixed(2)}ms`,
+                        error: errorMessage,
+                        errorCode: callError?.code,
+                        errorData: errorData,
+                        isAllowanceError,
+                        tx: {
+                          to: tx.to,
+                          from: tx.from,
+                          dataLength: tx.data?.length,
+                          hasValue: !!tx.value,
+                        },
+                        chainId,
+                      },
+                    );
+
+                    if (isAllowanceError) {
+                      console.warn(
+                        `⚠️ [SWAP] Token approval insufficient. User needs to approve more tokens.`,
+                        { timestamp: new Date().toISOString() },
+                      );
+                    } else {
+                      console.warn(
+                        `⚠️ [SWAP] Will use fallback gas for call ${index + 1}`,
+                        { timestamp: new Date().toISOString() },
+                      );
+                    }
+
                     return {
                       call,
                       error: new Error(
-                        swapErrorToUserReadableMessage(callError),
+                        swapErrorToUserReadableMessage({
+                          message: errorMessage,
+                          reason: errorMessage,
+                          data: { originalError: { message: errorMessage } },
+                        }),
                       ),
                     };
                   });
@@ -332,80 +566,155 @@ export function useSwapCallback(
           }),
         );
 
+        const gasEstimationDuration =
+          performance.now() - gasEstimationStartTime;
+        console.log('✅ [SWAP] Gas estimation completed', {
+          timestamp: new Date().toISOString(),
+          duration: `${gasEstimationDuration.toFixed(2)}ms`,
+          successfulEstimates: estimatedCalls.filter(
+            (el): el is SuccessfulCall => 'gasEstimate' in el,
+          ).length,
+          failedEstimates: estimatedCalls.filter(
+            (el): el is FailedCall => 'error' in el,
+          ).length,
+        });
+
         // a successful estimation is a bignumber gas estimate and the next call is also a bignumber gas estimate
         const bestCallOption = estimatedCalls.find(
           (el): el is SuccessfulCall => 'gasEstimate' in el,
         );
 
-        // check if any calls errored with a recognizable error
-        if (!bestCallOption) {
+        // Gas estimation completed
+
+        // If no successful gas estimate, use the first call with a fallback gas limit
+        // This allows the wallet to estimate gas itself
+        let callToUse: SwapCall;
+        let gasLimit: BigNumber | undefined;
+
+        if (bestCallOption) {
+          callToUse = bestCallOption.call;
+          gasLimit = calculateGasMargin(bestCallOption.gasEstimate);
+          // Using successful gas estimate
+        } else {
+          // All gas estimations failed - use first call with fallback gas limit
+          // Calculate fallback based on trade complexity
           const errorCalls = estimatedCalls.filter(
             (call): call is FailedCall => 'error' in call,
           );
-          if (errorCalls.length > 0)
-            throw errorCalls[errorCalls.length - 1].error;
-          throw new Error(
-            'Unexpected error. Could not estimate gas for the swap.',
-          );
+
+          // Log the error for debugging but don't throw - let wallet try
+          if (errorCalls.length > 0) {
+            console.warn(
+              'Gas estimation failed, using fallback gas limit. Error:',
+              errorCalls[errorCalls.length - 1].error,
+            );
+          }
+
+          // Use first call with fallback gas estimate
+          // Base: 200k, +100k per hop in route (increased for Base Sepolia)
+          if (swapCalls.length === 0) {
+            throw new Error('No swap calls available');
+          }
+
+          const baseGas = 200_000;
+          const hopGas = 100_000;
+          let estimatedGas = baseGas;
+
+          // Estimate gas based on route complexity
+          for (const { route } of trade.swaps) {
+            estimatedGas += route.pools.length * hopGas;
+          }
+
+          callToUse = swapCalls[0];
+          gasLimit = calculateGasMargin(BigNumber.from(estimatedGas));
+
+          // Using fallback gas limit - wallet will estimate if needed
         }
 
-        const {
-          call: { address, calldata, value },
-        } = bestCallOption;
+        const { address, calldata, value } = callToUse;
 
-        return library
-          .getSigner()
-          .sendTransaction({
+        const txSendStartTime = performance.now();
+        console.log('📤 [SWAP] Sending transaction to wallet', {
+          timestamp: new Date().toISOString(),
+          address,
+          hasGasLimit: !!gasLimit,
+          gasLimit: gasLimit?.toString(),
+          hasValue: !!(value && !isZero(value)),
+          value: value?.toString(),
+        });
+
+        try {
+          // If gas estimation failed, let MetaMask estimate it
+          // Only provide gasLimit if we have a successful estimate
+          const txParams: any = {
             from: account,
             to: address,
             data: calldata,
-            // let the wallet try if we can't estimate the gas
-            gasLimit: calculateGasMargin(bestCallOption.gasEstimate),
             ...(value && !isZero(value) ? { value } : {}),
-          })
-          .then((response) => {
-            const inputSymbol = trade.inputAmount.currency.symbol;
-            const outputSymbol = trade.outputAmount.currency.symbol;
-            const inputAmount = trade.inputAmount.toSignificant(4);
-            const outputAmount = trade.outputAmount.toSignificant(4);
+          };
 
-            const base = `Swap ${inputAmount} ${inputSymbol} for ${outputAmount} ${outputSymbol}`;
-            const withRecipient =
-              recipient === account
-                ? base
-                : `${base} to ${
-                    recipientAddressOrName && isAddress(recipientAddressOrName)
-                      ? shortenAddress(recipientAddressOrName)
-                      : recipientAddressOrName
-                  }`;
+          // Always provide gasLimit to avoid MetaMask estimation delays
+          // Use successful estimate if available, otherwise use calculated fallback
+          if (gasLimit) {
+            txParams.gasLimit = gasLimit;
+          }
 
-            const tradeVersion = getTradeVersion(trade);
+          const txResponse = await library
+            .getSigner()
+            .sendTransaction(txParams);
 
-            const withVersion =
-              tradeVersion === Version.v3
-                ? withRecipient
-                : `${withRecipient} on ${tradeVersion}`;
-
-            addTransaction(response, {
-              summary: withVersion,
-              type: TransactionType.SWAPPED,
-            });
-
-            return { response, summary: withVersion };
-          })
-          .catch((error) => {
-            // if the user rejected the tx, pass this along
-            if (error?.code === 'ACTION_REJECTED') {
-              throw new Error('Transaction rejected.');
-            } else {
-              // otherwise, the error was unexpected and we need to convey that
-              console.error(`Swap failed`, error, address, calldata, value);
-
-              throw new Error(
-                `Swap failed: ${swapErrorToUserReadableMessage(error)}`,
-              );
-            }
+          const txSendDuration = performance.now() - txSendStartTime;
+          const totalSwapDuration = performance.now() - swapStartTime;
+          console.log('✅ [SWAP] Transaction sent successfully', {
+            timestamp: new Date().toISOString(),
+            txSendDuration: `${txSendDuration.toFixed(2)}ms`,
+            totalSwapDuration: `${totalSwapDuration.toFixed(2)}ms`,
+            hash: txResponse.hash,
           });
+
+          const response = txResponse;
+          const inputSymbol = trade.inputAmount.currency.symbol;
+          const outputSymbol = trade.outputAmount.currency.symbol;
+          const inputAmount = trade.inputAmount.toSignificant(4);
+          const outputAmount = trade.outputAmount.toSignificant(4);
+
+          const base = `Swap ${inputAmount} ${inputSymbol} for ${outputAmount} ${outputSymbol}`;
+          const withRecipient =
+            recipient === account
+              ? base
+              : `${base} to ${
+                  recipientAddressOrName && isAddress(recipientAddressOrName)
+                    ? shortenAddress(recipientAddressOrName)
+                    : recipientAddressOrName
+                }`;
+
+          const tradeVersion = getTradeVersion(trade);
+
+          const withVersion =
+            tradeVersion === Version.v3
+              ? withRecipient
+              : `${withRecipient} on ${tradeVersion}`;
+
+          addTransaction(response, {
+            summary: withVersion,
+            type: TransactionType.SWAPPED,
+          });
+
+          return { response, summary: withVersion };
+        } catch (error) {
+          console.error('❌ [SWAP] Error sending transaction:', error);
+          // if the user rejected the tx, pass this along
+          if (error?.code === 'ACTION_REJECTED') {
+            throw new Error('Transaction rejected.');
+          } else {
+            // otherwise, the error was unexpected and we need to convey that
+            console.error(`Swap failed`, error, address, calldata, value);
+
+            throw new Error(
+              `Swap failed: ${swapErrorToUserReadableMessage(error)}`,
+            );
+          }
+        }
       },
       error: null,
     };

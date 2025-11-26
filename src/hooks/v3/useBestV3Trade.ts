@@ -1,7 +1,7 @@
 import { Currency, CurrencyAmount, TradeType } from '@uniswap/sdk-core';
 
 import { BigNumber } from 'ethers';
-import { useMemo } from 'react';
+import { useMemo, useRef, useEffect } from 'react';
 import { useAllV3Routes } from './useAllV3Routes';
 import { useSingleContractMultipleData } from 'state/multicall/v3/hooks';
 import { useActiveWeb3React } from 'hooks';
@@ -73,10 +73,12 @@ export function useBestV3TradeExactIn(
 
   const routesLoading = algebraRoutesLoading || uniRoutesLoading;
 
+  // Skip algebra quoter if contract is not available
+  const skipAlgebraQuoter = !quoter;
   const algebraQuotesResults = useSingleContractMultipleData(
-    quoter,
+    skipAlgebraQuoter ? null : quoter,
     'quoteExactInput',
-    algebraQuoteExactInInputs,
+    skipAlgebraQuoter ? [] : algebraQuoteExactInInputs,
     {
       gasRequired: chainId
         ? QUOTE_GAS_OVERRIDES[chainId] ?? DEFAULT_GAS_QUOTE
@@ -84,10 +86,13 @@ export function useBestV3TradeExactIn(
     },
   );
 
+  // Re-enable UniV3 quoter on Base Sepolia now that ABI is fixed
+  // QuoterV2 returns 4 values, but we only need amountOut (first value)
+  const skipUniQuoter = (chainId as number) === 84532 && !uniQuoter;
   const uniQuotesResults = useSingleContractMultipleData(
-    uniQuoter,
+    skipUniQuoter ? null : uniQuoter,
     'quoteExactInput',
-    uniQuoteExactInInputs,
+    skipUniQuoter ? [] : uniQuoteExactInInputs,
     {
       gasRequired: chainId
         ? QUOTE_GAS_OVERRIDES[chainId] ?? DEFAULT_GAS_QUOTE
@@ -107,7 +112,30 @@ export function useBestV3TradeExactIn(
       };
     }
 
-    if (routesLoading || quotesResults.some(({ loading }) => loading)) {
+    // Check if routes or quotes are still loading
+    const isLoading =
+      routesLoading || quotesResults.some(({ loading }) => loading);
+    // Check if we have any valid results (even if some are still loading)
+    const hasValidResults = quotesResults.some(
+      ({ result, valid }) => result && valid,
+    );
+    // Check if all quotes have failed or are invalid
+    const allQuotesFailed =
+      quotesResults.length > 0 &&
+      quotesResults.every(
+        ({ result, valid, error }) => !result && (!valid || !!error),
+      );
+
+    // If all quotes failed, mark as no route found
+    if (allQuotesFailed) {
+      return {
+        state: V3TradeState.NO_ROUTE_FOUND,
+        trade: null,
+      };
+    }
+
+    // If loading and no valid results yet, return loading state
+    if (isLoading && !hasValidResults) {
       return {
         state: V3TradeState.LOADING,
         trade: null,
@@ -192,38 +220,182 @@ export function useBestV3TradeExactOut(
   const quoter = isV4 ? quoterV4 : quoterV3;
   const univ3Quoter = useUniV3Quoter();
 
+  // Early return if inputs are invalid - prevents unnecessary hook calls
+  const hasValidInputs = useMemo(() => {
+    return !!(currencyIn && amountOut && amountOut.currency);
+  }, [currencyIn, amountOut]);
+
+  // Create stable identifiers to prevent unnecessary recalculations
+  const currencyInId = useMemo(() => {
+    if (!currencyIn) return undefined;
+    return `${currencyIn.chainId}-${currencyIn.wrapped.address}`;
+  }, [currencyIn]);
+
+  const currencyOutId = useMemo(() => {
+    if (!amountOut?.currency) return undefined;
+    return `${amountOut.currency.chainId}-${amountOut.currency.wrapped.address}`;
+  }, [amountOut?.currency]);
+
+  const amountOutValue = useMemo(() => {
+    return amountOut?.quotient.toString();
+  }, [amountOut?.quotient]);
+
+  const tradeStartTimeRef = useRef<number | null>(null);
+  const quotesStartTimeRef = useRef<number | null>(null);
+  const prevCurrencyInIdRef = useRef<string | undefined>(currencyInId);
+  const prevCurrencyOutIdRef = useRef<string | undefined>(currencyOutId);
+  const prevAmountOutValueRef = useRef<string | undefined>(amountOutValue);
+
+  // Track when trade calculation starts - only when inputs actually change
+  useEffect(() => {
+    if (
+      hasValidInputs &&
+      (currencyInId !== prevCurrencyInIdRef.current ||
+        currencyOutId !== prevCurrencyOutIdRef.current ||
+        amountOutValue !== prevAmountOutValueRef.current)
+    ) {
+      // Reset quote start time when trade calculation restarts
+      quotesStartTimeRef.current = null;
+      tradeStartTimeRef.current = performance.now();
+      console.log('🔍 [PRICE] Trade calculation started (ExactOut)', {
+        timestamp: new Date().toISOString(),
+        currencyIn: currencyIn?.symbol,
+        currencyOut: amountOut?.currency?.symbol,
+        amountOut: amountOut?.toSignificant(4),
+        isV4,
+        chainId,
+      });
+    }
+    prevCurrencyInIdRef.current = currencyInId;
+    prevCurrencyOutIdRef.current = currencyOutId;
+    prevAmountOutValueRef.current = amountOutValue;
+  }, [
+    hasValidInputs,
+    currencyInId,
+    currencyOutId,
+    amountOutValue,
+    isV4,
+    chainId,
+    currencyIn,
+    amountOut,
+  ]);
+
+  // Only fetch routes if we have valid inputs
+  const routeFindingStartTime = useRef<number | null>(null);
   const {
     routes: algebraRoutes,
     loading: algebraRoutesLoading,
-  } = useAllV3Routes(currencyIn, amountOut?.currency, false, isV4);
+  } = useAllV3Routes(
+    hasValidInputs ? currencyIn : undefined,
+    hasValidInputs ? amountOut?.currency : undefined,
+    false,
+    isV4,
+  );
 
   const { routes: uniRoutes, loading: uniRoutesLoading } = useAllV3Routes(
-    currencyIn,
-    amountOut?.currency,
+    hasValidInputs ? currencyIn : undefined,
+    hasValidInputs ? amountOut?.currency : undefined,
     true,
   );
+
+  // Log route finding completion
+  useEffect(() => {
+    // Only log if we have valid currencies
+    if (!hasValidInputs) return;
+
+    if (
+      routeFindingStartTime.current === null &&
+      (algebraRoutesLoading || uniRoutesLoading)
+    ) {
+      routeFindingStartTime.current = performance.now();
+      console.log('🛣️ [PRICE] Route finding started (ExactOut)', {
+        timestamp: new Date().toISOString(),
+        currencyIn: currencyIn?.symbol,
+        currencyOut: amountOut?.currency?.symbol,
+        isV4,
+      });
+    } else if (
+      routeFindingStartTime.current !== null &&
+      !algebraRoutesLoading &&
+      !uniRoutesLoading
+    ) {
+      const routeFindingDuration =
+        performance.now() - routeFindingStartTime.current;
+      console.log('🛣️ [PRICE] Route finding completed (ExactOut)', {
+        timestamp: new Date().toISOString(),
+        duration: `${routeFindingDuration.toFixed(2)}ms`,
+        algebraRoutesCount: algebraRoutes.length,
+        uniRoutesCount: uniRoutes.length,
+        totalRoutes: algebraRoutes.length + uniRoutes.length,
+        isV4,
+      });
+      routeFindingStartTime.current = null;
+    }
+  }, [
+    algebraRoutesLoading,
+    uniRoutesLoading,
+    algebraRoutes.length,
+    uniRoutes.length,
+    currencyInId,
+    currencyOutId,
+    isV4,
+    hasValidInputs,
+  ]);
 
   const routesLoading = algebraRoutesLoading || uniRoutesLoading;
   const routes = isV4 ? algebraRoutes : algebraRoutes.concat(uniRoutes);
 
+  // Only prepare quote inputs if we have valid inputs and routes
   const algebraQuoteExactOutInputs = useMemo(() => {
+    if (!hasValidInputs || !amountOut) return [];
     return algebraRoutes.map((route) => [
       encodeRouteToPath(route, true, false, isV4),
-      amountOut ? `0x${amountOut.quotient.toString(16)}` : undefined,
+      `0x${amountOut.quotient.toString(16)}`,
     ]);
-  }, [amountOut, algebraRoutes, isV4]);
+  }, [hasValidInputs, amountOut, algebraRoutes, isV4]);
 
   const uniQuoteExactOutInputs = useMemo(() => {
+    if (!hasValidInputs || !amountOut) return [];
     return uniRoutes.map((route) => [
       encodeRouteToPath(route, true, true),
-      amountOut ? `0x${amountOut.quotient.toString(16)}` : undefined,
+      `0x${amountOut.quotient.toString(16)}`,
     ]);
-  }, [amountOut, uniRoutes]);
+  }, [hasValidInputs, amountOut, uniRoutes]);
+
+  // Skip algebra quoter if contract is not available
+  const skipAlgebraQuoter = !quoter;
+
+  useEffect(() => {
+    if (
+      hasValidInputs &&
+      !skipAlgebraQuoter &&
+      algebraQuoteExactOutInputs.length > 0 &&
+      quotesStartTimeRef.current === null
+    ) {
+      quotesStartTimeRef.current = performance.now();
+      console.log('⏳ [PRICE] Starting quote calls (ExactOut)', {
+        timestamp: new Date().toISOString(),
+        algebraQuotesCount: algebraQuoteExactOutInputs.length,
+        uniQuotesCount: uniQuoteExactOutInputs.length,
+        isV4,
+        currencyIn: currencyIn?.symbol,
+        currencyOut: amountOut?.currency?.symbol,
+      });
+    }
+  }, [
+    hasValidInputs,
+    skipAlgebraQuoter,
+    algebraQuoteExactOutInputs.length,
+    uniQuoteExactOutInputs.length,
+    isV4,
+    currencyIn,
+    amountOut,
+  ]);
 
   const algebraQuotesResults = useSingleContractMultipleData(
-    quoter,
+    skipAlgebraQuoter ? null : quoter,
     'quoteExactOutput',
-    algebraQuoteExactOutInputs,
+    skipAlgebraQuoter ? [] : algebraQuoteExactOutInputs,
     {
       gasRequired: chainId
         ? QUOTE_GAS_OVERRIDES[chainId] ?? DEFAULT_GAS_QUOTE
@@ -231,10 +403,13 @@ export function useBestV3TradeExactOut(
     },
   );
 
+  // Re-enable UniV3 quoter on Base Sepolia now that ABI is fixed
+  // QuoterV2 returns 4 values, but we only need amountIn (first value)
+  const skipUniQuoter = (chainId as number) === 84532 && !univ3Quoter;
   const uniQuotesResults = useSingleContractMultipleData(
-    univ3Quoter,
+    skipUniQuoter ? null : univ3Quoter,
     'quoteExactOutput',
-    uniQuoteExactOutInputs,
+    skipUniQuoter ? [] : uniQuoteExactOutInputs,
     {
       gasRequired: chainId
         ? QUOTE_GAS_OVERRIDES[chainId] ?? DEFAULT_GAS_QUOTE
@@ -245,6 +420,68 @@ export function useBestV3TradeExactOut(
   const quotesResults = isV4
     ? algebraQuotesResults
     : algebraQuotesResults.concat(uniQuotesResults);
+
+  // Log quote results status and detect timeouts
+  useEffect(() => {
+    if (quotesStartTimeRef.current !== null) {
+      const loadingCount = quotesResults.filter((r) => r.loading).length;
+      const validCount = quotesResults.filter((r) => r.valid && r.result)
+        .length;
+      const errorCount = quotesResults.filter((r) => r.error).length;
+      const invalidCount = quotesResults.filter((r) => !r.valid).length;
+      const elapsed = performance.now() - quotesStartTimeRef.current;
+
+      // Timeout after 15 seconds - quotes should not take this long
+      const QUOTE_TIMEOUT_MS = 15000;
+      const hasTimedOut = elapsed > QUOTE_TIMEOUT_MS;
+
+      if (loadingCount === 0 && quotesResults.length > 0) {
+        const quotesDuration = performance.now() - quotesStartTimeRef.current;
+        console.log('✅ [PRICE] Quote calls completed (ExactOut)', {
+          timestamp: new Date().toISOString(),
+          duration: `${quotesDuration.toFixed(2)}ms`,
+          totalQuotes: quotesResults.length,
+          validQuotes: validCount,
+          errorQuotes: errorCount,
+          invalidQuotes: invalidCount,
+          isV4,
+        });
+        quotesStartTimeRef.current = null;
+      } else if (hasTimedOut && loadingCount > 0) {
+        // Quote calls have timed out - log warning
+        console.warn('⏰ [PRICE] Quote calls timed out (ExactOut)', {
+          timestamp: new Date().toISOString(),
+          elapsed: `${elapsed.toFixed(2)}ms`,
+          timeout: `${QUOTE_TIMEOUT_MS}ms`,
+          loadingCount,
+          validCount,
+          errorCount,
+          invalidCount,
+          totalQuotes: quotesResults.length,
+          isV4,
+        });
+        quotesStartTimeRef.current = null; // Reset to prevent repeated warnings
+      } else if (quotesResults.length > 0 && loadingCount > 0) {
+        // Log progress if taking longer than expected
+        if (elapsed > 3000) {
+          // Log every 3 seconds if still loading
+          console.warn(
+            '⏳ [PRICE] Quote calls taking longer than expected (ExactOut)',
+            {
+              timestamp: new Date().toISOString(),
+              elapsed: `${elapsed.toFixed(2)}ms`,
+              loadingCount,
+              validCount,
+              errorCount,
+              invalidCount,
+              totalQuotes: quotesResults.length,
+              isV4,
+            },
+          );
+        }
+      }
+    }
+  }, [quotesResults, isV4]);
 
   const trade = useMemo(() => {
     if (
@@ -258,7 +495,45 @@ export function useBestV3TradeExactOut(
       };
     }
 
-    if (routesLoading || quotesResults.some(({ loading }) => loading)) {
+    // Check if routes or quotes are still loading
+    const isLoading =
+      routesLoading || quotesResults.some(({ loading }) => loading);
+    // Check if we have any valid results (even if some are still loading)
+    const hasValidResults = quotesResults.some(
+      ({ result, valid }) => result && valid,
+    );
+    // Check if all quotes have failed or are invalid
+    const allQuotesFailed =
+      quotesResults.length > 0 &&
+      quotesResults.every(
+        ({ result, valid, error }) => !result && (!valid || !!error),
+      );
+
+    // Check for timeout - if quotes have been loading for too long, consider them failed
+    const quotesTimedOut =
+      quotesStartTimeRef.current !== null &&
+      performance.now() - quotesStartTimeRef.current > 15000; // 15 second timeout
+
+    // If all quotes failed or timed out, mark as no route found
+    if (allQuotesFailed || (quotesTimedOut && !hasValidResults)) {
+      if (quotesTimedOut && !hasValidResults) {
+        console.warn(
+          '⏰ [PRICE] Quotes timed out, marking as no route found (ExactOut)',
+          {
+            timestamp: new Date().toISOString(),
+            totalQuotes: quotesResults.length,
+            isV4,
+          },
+        );
+      }
+      return {
+        state: V3TradeState.NO_ROUTE_FOUND,
+        trade: null,
+      };
+    }
+
+    // If loading and no valid results yet, return loading state (but not indefinitely)
+    if (isLoading && !hasValidResults && !quotesTimedOut) {
       return {
         state: V3TradeState.LOADING,
         trade: null,
@@ -305,7 +580,7 @@ export function useBestV3TradeExactOut(
 
     const isSyncing = quotesResults.some(({ syncing }) => syncing);
 
-    return {
+    const result = {
       state: isSyncing ? V3TradeState.SYNCING : V3TradeState.VALID,
       trade: Trade.createUncheckedTrade({
         route: bestRoute,
@@ -317,7 +592,31 @@ export function useBestV3TradeExactOut(
         outputAmount: amountOut,
       }),
     };
-  }, [amountOut, currencyIn, quotesResults, routes, routesLoading]);
+
+    // Log trade calculation completion
+    if (tradeStartTimeRef.current !== null && result.trade) {
+      const tradeDuration = performance.now() - tradeStartTimeRef.current;
+      console.log('✅ [PRICE] Trade calculation completed (ExactOut)', {
+        timestamp: new Date().toISOString(),
+        duration: `${tradeDuration.toFixed(2)}ms`,
+        state: result.state,
+        inputAmount: result.trade.inputAmount.toSignificant(4),
+        outputAmount: result.trade.outputAmount.toSignificant(4),
+        isV4,
+      });
+      tradeStartTimeRef.current = null;
+    }
+
+    return result;
+  }, [
+    amountOut,
+    currencyIn,
+    quotesResults,
+    routes,
+    routesLoading,
+    isV4,
+    hasValidInputs,
+  ]);
 
   return useMemo(() => {
     return trade;

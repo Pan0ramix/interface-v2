@@ -194,6 +194,7 @@ export const UNIV3_QUOTER_ADDRESSES: AddressMap = {
   [ChainId.IMX]: '0xE9CC37904875B459Fa5D0FE37680d36F1ED55e38',
   [ChainId.ASTARZKEVM]: '0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270',
   [ChainId.MINATO]: '0xF6Ad3CcF71Abb3E12beCf6b3D2a74C963859ADCd',
+  84532: '0x43C916c6f235B90C50fA6FD31b95015D98F857e3', // Base Sepolia
 };
 
 export const SWAP_ROUTER_ADDRESSES: AddressMap = {
@@ -266,6 +267,7 @@ export const UNI_SWAP_ROUTER: AddressMap = {
   [ChainId.IMX]: '0x6c28AeF8977c9B773996d0e8376d2EE379446F2f',
   [ChainId.ASTARZKEVM]: '0x4B9f4d2435Ef65559567e5DbFC1BbB37abC43B57',
   [ChainId.MINATO]: '0x6c28AeF8977c9B773996d0e8376d2EE379446F2f',
+  84532: '0x324a502402AcDf6ba598d0407C313Bb6525CA130', // Base Sepolia
 };
 
 export const GAMMA_MASTERCHEF_ADDRESSES: AddressMap[] = [
@@ -644,6 +646,13 @@ export const USDC: { [chainId: number]: Token } = {
     'USDC',
     'USDC',
   ),
+  84532: new Token(
+    84532,
+    '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
+    6,
+    'USDC',
+    'USD Coin',
+  ), // Base Sepolia
 };
 
 export const USDCE: { [chainId: number]: Token } = {

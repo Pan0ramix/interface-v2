@@ -194,7 +194,6 @@ const SwapV3Page: React.FC = () => {
   );
   const handleTypeOutput = useCallback(
     (value: string) => {
-      console.log('USER OUTPUT SAMEEP');
       onUserInput(Field.OUTPUT, value);
     },
     [onUserInput],
@@ -366,7 +365,52 @@ const SwapV3Page: React.FC = () => {
   const { walletInfo } = useWalletInfo();
 
   const handleSwap = useCallback(() => {
+    const handleSwapStartTime = performance.now();
+    console.log('🔄 [UI] handleSwap called', {
+      timestamp: new Date().toISOString(),
+      hasSwapCallback: !!swapCallback,
+      swapCallbackError,
+      approvalState,
+      signatureState,
+      trade: trade
+        ? {
+            input: `${trade.inputAmount.toSignificant(4)} ${
+              trade.inputAmount.currency.symbol
+            }`,
+            output: `${trade.outputAmount.toSignificant(4)} ${
+              trade.outputAmount.currency.symbol
+            }`,
+          }
+        : null,
+    });
+
+    // Safety check: prevent swap if approval is not done
+    if (
+      currencies[Field.INPUT]?.isToken &&
+      approvalState !== ApprovalState.APPROVED &&
+      signatureState !== UseERC20PermitState.SIGNED
+    ) {
+      console.error('❌ [UI] Swap blocked: Token approval required', {
+        timestamp: new Date().toISOString(),
+        approvalState,
+        signatureState,
+        token: currencies[Field.INPUT]?.symbol,
+      });
+      setSwapState({
+        attemptingTxn: false,
+        tradeToConfirm,
+        showConfirm,
+        swapErrorMessage:
+          'Token approval required. Please approve the token before swapping.',
+        txHash: undefined,
+      });
+      return;
+    }
+
     if (!swapCallback) {
+      console.error('❌ [UI] Swap callback is null, cannot proceed', {
+        timestamp: new Date().toISOString(),
+      });
       return;
     }
 
@@ -377,8 +421,21 @@ const SwapV3Page: React.FC = () => {
       swapErrorMessage: undefined,
       txHash: undefined,
     });
+
+    const swapCallbackStartTime = performance.now();
+    console.log('⏳ [UI] Calling swapCallback...', {
+      timestamp: new Date().toISOString(),
+    });
     swapCallback()
       .then(async ({ response, summary }) => {
+        const swapCallbackDuration = performance.now() - swapCallbackStartTime;
+        const totalHandleSwapDuration = performance.now() - handleSwapStartTime;
+        console.log('✅ [UI] Swap callback resolved', {
+          timestamp: new Date().toISOString(),
+          swapCallbackDuration: `${swapCallbackDuration.toFixed(2)}ms`,
+          totalHandleSwapDuration: `${totalHandleSwapDuration.toFixed(2)}ms`,
+          hash: response.hash,
+        });
         setSwapState({
           attemptingTxn: false,
           txPending: true,
@@ -450,6 +507,7 @@ const SwapV3Page: React.FC = () => {
         }
       })
       .catch((error) => {
+        console.error('❌ Swap callback rejected:', error);
         setSwapState({
           attemptingTxn: false,
           tradeToConfirm,
@@ -488,6 +546,7 @@ const SwapV3Page: React.FC = () => {
   }, [trade]);
 
   // show approve flow when: no error on inputs, not approved or pending, or approved in current session
+  // CRITICAL: Also show when UNKNOWN if we have a valid trade - this handles cases where allowance is still loading
   // never show if price impact is above threshold in non expert mode
   const showApproveFlow =
     !swapInputError &&
@@ -495,12 +554,41 @@ const SwapV3Page: React.FC = () => {
     (showNativeConvert
       ? nativeConvertApproval === ApprovalState.NOT_APPROVED ||
         nativeConvertApproval === ApprovalState.PENDING ||
+        nativeConvertApproval === ApprovalState.UNKNOWN ||
         (nativeApprovalSubmitted &&
           nativeConvertApproval === ApprovalState.APPROVED)
       : approvalState === ApprovalState.NOT_APPROVED ||
         approvalState === ApprovalState.PENDING ||
+        // Show approve button if UNKNOWN and we have a valid trade (allowance might still be loading)
+        (approvalState === ApprovalState.UNKNOWN &&
+          trade &&
+          currencies[Field.INPUT]?.isToken) ||
         (approvalSubmitted && approvalState === ApprovalState.APPROVED)) &&
     !(priceImpactSeverity > 3 && !isExpertMode);
+
+  // Log approval state for debugging (throttled to prevent excessive logging)
+  const prevApprovalStateRef = React.useRef<ApprovalState | undefined>(
+    undefined,
+  );
+  useEffect(() => {
+    // Only log when approval state actually changes
+    if (
+      prevApprovalStateRef.current !== approvalState &&
+      trade &&
+      currencies[Field.INPUT]?.isToken &&
+      approvalState !== ApprovalState.APPROVED
+    ) {
+      console.log('🔐 [APPROVAL] Approval state changed', {
+        timestamp: new Date().toISOString(),
+        approvalState,
+        showApproveFlow,
+        token: currencies[Field.INPUT]?.symbol,
+        hasTrade: !!trade,
+        signatureState,
+      });
+      prevApprovalStateRef.current = approvalState;
+    }
+  }, [approvalState, showApproveFlow, trade, currencies, signatureState]);
 
   const handleConfirmDismiss = useCallback(() => {
     setSwapState({
@@ -926,6 +1014,7 @@ const SwapV3Page: React.FC = () => {
                   fullWidth
                   onClick={handleApprove}
                   disabled={
+                    approvalState === ApprovalState.UNKNOWN ||
                     approvalState !== ApprovalState.NOT_APPROVED ||
                     approvalSubmitted ||
                     signatureState === UseERC20PermitState.SIGNED
@@ -946,8 +1035,10 @@ const SwapV3Page: React.FC = () => {
                       }}
                     >
                       {/* we need to shorten this string on mobile */}
-                      {approvalState === ApprovalState.APPROVED ||
-                      signatureState === UseERC20PermitState.SIGNED
+                      {approvalState === ApprovalState.UNKNOWN
+                        ? t('loading')
+                        : approvalState === ApprovalState.APPROVED ||
+                          signatureState === UseERC20PermitState.SIGNED
                         ? `${t('youcannowtrade')} ${
                             currencies[Field.INPUT]?.symbol
                           }`
@@ -955,8 +1046,10 @@ const SwapV3Page: React.FC = () => {
                             currencies[Field.INPUT]?.symbol
                           }`}
                     </span>
-                    {approvalSubmitted &&
-                    approvalState !== ApprovalState.APPROVED ? (
+                    {approvalState === ApprovalState.UNKNOWN ? (
+                      <Loader stroke='white' />
+                    ) : approvalSubmitted &&
+                      approvalState !== ApprovalState.APPROVED ? (
                       <Loader stroke='white' />
                     ) : (approvalSubmitted &&
                         approvalState === ApprovalState.APPROVED) ||

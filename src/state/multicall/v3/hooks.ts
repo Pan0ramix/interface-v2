@@ -199,16 +199,30 @@ function toCallState(
   };
 }
 
+// FIXED: Added try-catch to handle Multicall3 contracts that don't have getEthBalance
 export function useSingleContractMultipleData(
   contract: Contract | null | undefined,
   methodName: string,
   callInputs: OptionalMethodInputs[],
   options: Partial<V3ListenerOptions> & { gasRequired?: number } = {},
 ): CallState[] {
-  const fragment = useMemo(() => contract?.interface?.getFunction(methodName), [
-    contract,
-    methodName,
-  ]);
+  const fragment = useMemo(() => {
+    // Early return if no contract - prevents any fragment lookup attempts
+    if (!contract || !contract.interface) return undefined;
+
+    // Safely get the function fragment with comprehensive error handling
+    // Multicall3 doesn't have getEthBalance, so we need to handle this gracefully
+    try {
+      // Try to get the function - this will throw if it doesn't exist
+      const func = contract.interface.getFunction(methodName);
+      return func;
+    } catch (error) {
+      // Any error means the function doesn't exist or isn't accessible
+      // This handles cases like Multicall3 which doesn't have getEthBalance
+      // Return undefined to prevent the hook from crashing
+      return undefined;
+    }
+  }, [contract, methodName]);
 
   const blocksPerFetch = options?.blocksPerFetch;
   const gasRequired = options?.gasRequired;

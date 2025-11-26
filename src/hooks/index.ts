@@ -47,9 +47,39 @@ export function useActiveWeb3React() {
     return web3ModalChainId;
   }, [web3ModalChainId]);
 
-  const provider = walletProvider
-    ? new providers.Web3Provider(walletProvider)
-    : undefined;
+  const provider = useMemo(() => {
+    if (!walletProvider) return undefined;
+
+    try {
+      const web3Provider = new providers.Web3Provider(walletProvider);
+
+      // Add error handler for MetaMask disconnection
+      // walletProvider may have event listeners, but TypeScript doesn't know about them
+      const providerWithEvents = walletProvider as any;
+      if (providerWithEvents && typeof providerWithEvents.on === 'function') {
+        providerWithEvents.on('disconnect', (error: any) => {
+          console.warn('🔌 [WALLET] Provider disconnected', {
+            error: error?.message || error,
+            timestamp: new Date().toISOString(),
+          });
+        });
+
+        providerWithEvents.on('connect', () => {
+          console.log('🔌 [WALLET] Provider connected', {
+            timestamp: new Date().toISOString(),
+          });
+        });
+      }
+
+      return web3Provider;
+    } catch (error) {
+      console.error('❌ [WALLET] Failed to create provider', {
+        error: error?.message || error,
+        timestamp: new Date().toISOString(),
+      });
+      return undefined;
+    }
+  }, [walletProvider]);
 
   return {
     account: address,

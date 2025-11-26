@@ -1,6 +1,6 @@
 import { parseBytes32String } from '@ethersproject/strings';
 import { Currency, ETHER, Token, currencyEquals, ChainId } from '@uniswap/sdk';
-import { useMemo } from 'react';
+import { useMemo, useEffect } from 'react';
 import { useSelectedTokenList, useInactiveTokenList } from 'state/lists/hooks';
 import {
   NEVER_RELOAD,
@@ -93,7 +93,7 @@ function parseStringOrBytes32(
 // null if loading
 // otherwise returns the token
 export function useToken(tokenAddress?: string): Token | undefined | null {
-  const { chainId } = useActiveWeb3React();
+  const { chainId, library } = useActiveWeb3React();
   const tokens = useAllTokens();
 
   const address = isAddress(tokenAddress);
@@ -103,6 +103,18 @@ export function useToken(tokenAddress?: string): Token | undefined | null {
     address ? address : undefined,
     false,
   );
+
+  // Debug logging for contract creation
+  useEffect(() => {
+    if (address && !tokenContract) {
+      console.warn('⚠️ [v2] Token contract not created:', {
+        address,
+        chainId,
+        hasLibrary: !!library,
+        libraryType: library?.constructor?.name,
+      });
+    }
+  }, [address, tokenContract, chainId, library]);
   const token: Token | undefined = address
     ? Object.values(tokens).find(
         (token) => token.address.toLowerCase() === address.toLowerCase(),
@@ -141,11 +153,39 @@ export function useToken(tokenAddress?: string): Token | undefined | null {
   );
 
   return useMemo(() => {
-    if (token) return token;
-    if (!chainId || !address) return undefined;
-    if (decimals.loading || symbol.loading || tokenName.loading) return null;
+    if (token) {
+      return token;
+    }
+    if (!chainId || !address) {
+      return undefined;
+    }
+
+    // If token contract doesn't exist, return null to keep trying
+    // The contract might be created on the next render
+    if (!tokenContract) {
+      console.log(
+        '⏳ [v2] Token contract not created yet for address:',
+        address,
+        {
+          chainId,
+          hasLibrary: !!library,
+        },
+      );
+      return null; // Return null instead of undefined to keep trying
+    }
+
+    // Check if any calls are still loading
+    const isLoading = decimals.loading || symbol.loading || tokenName.loading;
+
+    // Check if any calls have errors
+    const hasError = decimals.error || symbol.error || tokenName.error;
+
+    // Check if any calls are invalid (contract might not exist or call failed)
+    const hasInvalid = !decimals.valid || !symbol.valid || !tokenName.valid;
+
+    // If we have decimals result, we can create a token (even if name/symbol failed)
     if (decimals.result) {
-      return new Token(
+      const newToken = new Token(
         chainId,
         address,
         decimals.result[0],
@@ -160,19 +200,79 @@ export function useToken(tokenAddress?: string): Token | undefined | null {
           'Unknown Token',
         ),
       );
+      return newToken;
     }
+
+    // If we're still loading, return null to indicate loading state
+    if (isLoading) {
+      return null;
+    }
+
+    // If we have an error but no result, and we're not loading, the token might not exist
+    // But we should still return null to show loading state for a bit longer
+    // This handles cases where multicall is slow or retrying
+    if (hasError && !decimals.result) {
+      // Log for debugging
+      console.warn('⚠️ [v2] Token fetch error for address:', address, {
+        decimals: {
+          valid: decimals.valid,
+          loading: decimals.loading,
+          error: decimals.error,
+          result: decimals.result,
+        },
+        symbol: {
+          valid: symbol.valid,
+          loading: symbol.loading,
+          error: symbol.error,
+          result: symbol.result,
+        },
+        tokenName: {
+          valid: tokenName.valid,
+          loading: tokenName.loading,
+          error: tokenName.error,
+          result: tokenName.result,
+        },
+      });
+      // Return null to keep showing loading state, in case it's a transient error
+      return null;
+    }
+
+    // If calls are invalid (contract might not exist or calls failed), return null to keep trying
+    if (hasInvalid && !decimals.result && !isLoading) {
+      console.warn('⚠️ [v2] Token calls invalid for address:', address, {
+        decimalsValid: decimals.valid,
+        symbolValid: symbol.valid,
+        tokenNameValid: tokenName.valid,
+      });
+      // Return null to keep showing loading state, in case multicall is retrying
+      return null;
+    }
+
     return undefined;
   }, [
+    tokenAddress,
     address,
     chainId,
+    library,
+    tokenContract,
+    tokenContractBytes32,
+    decimals.valid,
     decimals.loading,
     decimals.result,
+    decimals.error,
+    decimals.syncing,
+    symbol.valid,
     symbol.loading,
     symbol.result,
+    symbol.error,
+    symbol.syncing,
     symbolBytes32.result,
     token,
+    tokenName.valid,
     tokenName.loading,
     tokenName.result,
+    tokenName.error,
+    tokenName.syncing,
     tokenNameBytes32.result,
   ]);
 }

@@ -303,9 +303,18 @@ export function useEIP2612Contract(tokenAddress?: string): Contract | null {
 export function useMulticallContract(): Contract | null {
   const { chainId } = useActiveWeb3React();
   const multicallAddress = chainId
-    ? MULTICALL_NETWORKS[chainId] || MULTICALL_NETWORKS_EXTENDED[chainId]
+    ? MULTICALL_NETWORKS[chainId] ||
+      MULTICALL_NETWORKS_EXTENDED[chainId] ||
+      MULTICALL3_ADDRESS[chainId]
     : undefined;
-  return useContract(multicallAddress, MULTICALL_ABI, false);
+  const multicallAbi =
+    chainId &&
+    !MULTICALL_NETWORKS[chainId] &&
+    !MULTICALL_NETWORKS_EXTENDED[chainId] &&
+    MULTICALL3_ADDRESS[chainId]
+      ? MULTICALL3_ABI
+      : MULTICALL_ABI;
+  return useContract(multicallAddress, multicallAbi, false);
 }
 
 export function useMulticall2Contract() {

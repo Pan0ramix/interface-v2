@@ -49,11 +49,22 @@ export function useV3TokenAllowance(
   owner?: string,
   spender?: string,
 ): CurrencyAmount<V3Token> | undefined {
-  const { data: allowance } = useTokenAllowanceData(
+  const { data: allowance, isLoading, error } = useTokenAllowanceData(
     token?.address,
     owner,
     spender,
   );
+
+  // Log errors for debugging
+  if (error && process.env.NODE_ENV === 'development') {
+    console.debug('🔐 [ALLOWANCE] Error fetching allowance', {
+      token: token?.symbol,
+      tokenAddress: token?.address,
+      owner,
+      spender,
+      error,
+    });
+  }
 
   return useMemo(
     () =>
